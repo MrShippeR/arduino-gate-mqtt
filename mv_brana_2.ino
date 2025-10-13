@@ -1,0 +1,503 @@
+/*
+* Program na ovládání samonosné posuvné brány. Arduino je tady nadstavbou - dává pokyn k desce ovládající samotný pohon, že se má otevřít či zavřít. Arduino přináší možnost otevřít bránu přes internet,
+* konkrétně přes webovou aplikaci Home Assistant. Home Assistant využívá protokolu MQTT pro komunikaci s Ardinem. Prostředníkem pro řízení komunikace je tady Mosquitto broker (server), který řídí komunikaci po
+* protoku MQTT. 
+*
+* Použitý Hardware:
+* https://pohonservis.cz/produkt/posuvna-samonosna-brana-vc-sloupku-a-pohonu--sb
+* Arduino Uno rev 3
+* Ethernet shield W5100
+* ** Ethernet Shield využívá piny 11, 12 a 13 pro SPI a dále pin 10 pro CS signál W5100 a pin 4 pro CS signál slotu pro paměťové karty.
+* Relay Shield V2.0 Deek-Robot.com
+* Převodník I2C pro LCD displej HD44780 2x16 znaků
+*
+*
+* Instalace knihven:
+* Nutno doinstalovat knihovnu Ticker ve verzi 4.0 nebo novější z GitHub Repozitáře - https://github.com/sstaub/Ticker
+*
+* Verze 1.0 09/2025
+* marek@vach.cz
+*/
+
+#include <SPI.h>
+#include <Ethernet.h>
+#include <PubSubClient.h>
+
+#include "Ticker.h"
+
+// #include <Wire.h> 
+// #include <LiquidCrystal_I2C.h>
+
+// HW pinout section
+const int pin_sensor_mailbox = 2;
+const int pin_sensor_closed = 3;
+
+// Relay module **never use more relay then one at same time because of internal Arduino power supply will overload
+// pin 4 reserved for chip select of SD card.
+const int pin_gate_close = 5;
+const int pin_gate_open_car = 6;
+const int pin_gate_open_pedestrian = 7;
+
+const int pin_button_car = 8;
+const int pin_button_pedestrian = 9;
+// pin 10 reserved for chip select of Ethernet W5100
+
+const int pin_photocell = A0;
+const int pin_induction_loop = A1;
+
+const int pin_remote_open = A2;
+const int pin_remote_close = A3;
+
+// const int pin_LCD_SDA = A4;
+// const int pin_LCD_SCL = A5;
+// const int lcd_delay = 2000;
+// LiquidCrystal_I2C lcd(0x27,16,2);
+
+
+// Variables to memorize last states
+int last_sensor_mailbox;
+int last_sensor_closed;
+int last_button_car;
+int last_button_pedestrian;
+int last_photocell;
+int last_induction_loop;
+int last_remote_open;
+int last_remote_close;
+
+int input_state;
+
+// MQTT topics
+const char* topic_mailbox                      = "g/s/mail";
+const char* topic_closed_limit                 = "g/s/cl_lim";
+const char* topic_relay_close_set              = "g/rl/cl/set";
+const char* topic_relay_accept_command         = "g/rl/ok";
+const char* topic_relay_open_car_set           = "g/rl/op_car/set";
+const char* topic_relay_open_car_status        = "g/rl/op_car/stat";
+const char* topic_relay_open_pedestrian_set    = "g/rl/op_ped/set";
+const char* topic_relay_open_pedestrian_status = "g/rl/op_ped/stat";
+const char* topic_button_car                   = "g/b/car";
+const char* topic_button_pedestrian            = "g/b/ped";
+const char* topic_photocell                    = "g/s/pho";
+const char* topic_induction_loop               = "g/s/ind";
+const char* topic_remote_open                  = "g/rm/op";
+const char* topic_remote_close                 = "g/rm/cl";
+
+
+// timers are defined at bottom before setup() function
+int state_of_timer_end_relay_impulse = 0;
+
+
+void callback(char* topic, byte* payload, unsigned int length) {
+  Serial.print("Message arrived [");
+  Serial.print(topic);
+  Serial.print("] ");
+  for (int i = 0; i < length; i++) {
+    Serial.print((char)payload[i]);
+  }
+  Serial.println();
+
+/* 
+  if (state_of_timer_end_relay_impulse != 0) {
+    //mqttInfoDroppingSwitchCommands();
+    return;
+  }
+
+  if ( strcmp(topic, topic_relay_close_set) == 0 ) 
+    switchRelayOn("Received Close command from MQTT.", pin_gate_close);
+    
+  if ( strcmp(topic, topic_relay_open_car_set) == 0 )
+    switchRelayOn("Received Open for car command from MQTT.", pin_gate_open_car);
+
+  if ( strcmp(topic, topic_relay_open_pedestrian_set) == 0 )
+    switchRelayOn("Received Open for pedestrian command from MQTT.", pin_gate_open_pedestrian);  
+*/
+}
+
+
+
+// values for your network.
+byte mac[]    = { 0x02, 0x17, 0x3A, 0x4B, 0x5C, 0x6E };
+EthernetClient ethClient;
+
+IPAddress server(192, 168, 0, 2);
+PubSubClient client(server, 1883, callback, ethClient);
+
+
+
+void setupIoPins() {
+  pinMode(pin_sensor_mailbox, INPUT_PULLUP);
+  pinMode(pin_sensor_closed,  INPUT_PULLUP);
+
+  pinMode(pin_gate_close,           OUTPUT);
+  pinMode(pin_gate_open_car,        OUTPUT);
+  pinMode(pin_gate_open_pedestrian, OUTPUT);
+
+  pinMode(pin_button_car,        INPUT_PULLUP);
+  pinMode(pin_button_pedestrian, INPUT_PULLUP);
+
+  pinMode(pin_photocell,      INPUT_PULLUP);
+  pinMode(pin_induction_loop, INPUT_PULLUP);
+
+  pinMode(pin_remote_open,  INPUT_PULLUP);
+  pinMode(pin_remote_close, INPUT_PULLUP);
+
+  digitalWrite(pin_gate_close,           LOW);
+  digitalWrite(pin_gate_open_car,        LOW);
+  digitalWrite(pin_gate_open_pedestrian, LOW);
+
+  last_sensor_mailbox    = digitalRead(pin_sensor_mailbox);
+  last_sensor_closed     = digitalRead(pin_sensor_closed);
+  last_button_car        = digitalRead(pin_button_car);
+  last_button_pedestrian = digitalRead(pin_button_pedestrian);
+  last_photocell         = digitalRead(pin_photocell);
+  last_induction_loop    = digitalRead(pin_induction_loop);
+  last_remote_open       = digitalRead(pin_remote_open);
+  last_remote_close      = digitalRead(pin_remote_close);
+}
+
+
+
+boolean reconnectEthernet() {
+  Serial.println("Obtaining IP adress form DHCP...");
+  Ethernet.begin(mac);  // if you want static, you must add second parameter IP
+  delay(1500);
+
+  if (Ethernet.localIP() != IPAddress(0,0,0,0)) {
+    Serial.print("Success! IP adress is ");
+    Serial.println(Ethernet.localIP());
+    return true;
+  }
+  else {
+    Serial.println("error");
+    return false;
+  }
+}
+
+
+
+void maintainEthernet() {
+  Ethernet.maintain();
+}
+
+
+
+boolean reconnectMQTT() {
+  Serial.println("Connecting MQTT...");
+  client.disconnect();
+  client.setBufferSize(512);
+  client.setKeepAlive(30);
+  client.setSocketTimeout(40);
+  // Change your MQTT credentials here:
+  if (client.connect("garduino", "gate", "Drainpipe", "g/stat", 0, true, "offline")) { // display_name, username, password, LastWill_topic, QoS=0, retain=true, LastWill_message
+    Serial.print("MQTT connected to broker at ");
+    Serial.println(server);
+    //client.loop();
+
+    client.subscribe(topic_relay_close_set);
+    client.subscribe(topic_relay_open_car_set);
+    client.subscribe(topic_relay_open_pedestrian_set);
+
+    MqttReportCompleteStatus();
+
+  }
+  else {
+    Serial.print("error - code 'pubsubclient state' is: ");
+    Serial.println(client.state());
+  }
+  return client.connected();
+}
+
+
+
+void maintainMQTT() {
+  client.loop();
+}
+
+
+
+void checkAndRepairConnectivity() {
+    if (!client.connected()) {
+      Serial.print("V hlavní smyčce zjištěno, že nefunguje MQTT komunikace. Kód chyby 'pubsubclient state' je: ");
+      Serial.println(client.state());
+
+      if (!ethClient.connect(server, 80)) {   // based on my constalation I have webserver on same machine running on port 80. If you don't, you must change way to know if ethernet is working
+        Serial.println("V hlavní smyčce zjištěno, že spadla ethernet komunikace.");
+        if (reconnectEthernet()) {
+          reconnectMQTT();
+          return;
+        }
+        else {
+          Serial.println("Ethernet se nepodarilo obnovit, preskakuji obnovovani MQTT...");
+          return;
+        }
+      }
+      else {
+        Serial.println("Kontrola Ethernet spojeni - v poradku.");
+        reconnectMQTT();
+      }
+    }
+    else
+      Serial.println("Periodicka kontrola - MQTT - v poradku.");
+}
+
+
+
+void MqttReportCompleteStatus() {
+  client.publish("g/stat", "online");
+
+  // here is 8x same logic, repeated for every input
+  input_state = digitalRead(pin_sensor_mailbox);
+    if (input_state == HIGH)
+      client.publish(topic_mailbox, "1");
+    else
+      client.publish(topic_mailbox, "0");
+
+  input_state = digitalRead(pin_sensor_closed);
+    if (input_state == HIGH)
+      client.publish(topic_closed_limit, "1");
+    else
+      client.publish(topic_closed_limit, "0");
+
+  input_state = digitalRead(pin_button_car);
+    if (input_state == HIGH)
+      client.publish(topic_button_car, "1");
+    else
+      client.publish(topic_button_car, "0");
+
+  input_state = digitalRead(pin_button_pedestrian);
+    if (input_state == HIGH)
+      client.publish(topic_button_pedestrian, "1");
+    else
+      client.publish(topic_button_pedestrian, "0");
+
+  input_state = digitalRead(pin_photocell);
+    if (input_state == HIGH)
+      client.publish(topic_photocell, "1");
+    else
+      client.publish(topic_photocell, "0");
+
+  input_state = digitalRead(pin_induction_loop);
+    if (input_state == HIGH)
+      client.publish(topic_induction_loop, "1");
+    else
+      client.publish(topic_induction_loop, "0");
+
+  input_state = digitalRead(pin_remote_open);
+    if (input_state == HIGH)
+      client.publish(topic_remote_open, "1");
+    else
+      client.publish(topic_remote_open, "0");
+
+  input_state = digitalRead(pin_remote_close);
+    if (input_state == HIGH)
+      client.publish(topic_remote_close, "1");
+    else
+      client.publish(topic_remote_close, "0");
+}
+
+
+
+void mqttInfoDroppingSwitchCommands() {
+  Serial.println("Skipping MQTT command. Already timing previous command of relay impulse. Only 1 relay can be active in same time.");
+  //client.publish(topic_relay_accept_command, "0");
+}
+
+
+/**/
+void scanInputsForChange() {
+  // here is 8x same logic, repeated for every input
+  input_state = digitalRead(pin_sensor_mailbox);
+  if (input_state != last_sensor_mailbox) {
+    last_sensor_mailbox = input_state;
+
+    if (input_state == HIGH) {
+      client.publish(topic_mailbox, "1");
+    }
+    else {
+      client.publish(topic_mailbox, "0");
+    }
+
+    Serial.print("Mailbox: ");
+    Serial.println(input_state);
+  }
+
+
+  input_state = digitalRead(pin_sensor_closed);
+  if (input_state != last_sensor_closed) {
+    last_sensor_closed = input_state;
+
+    if (input_state == HIGH) {
+      client.publish(topic_closed_limit, "1");
+    }
+    else {
+      client.publish(topic_closed_limit, "0");
+    }
+
+    Serial.print("Sensor closed: ");
+    Serial.println(input_state);
+  }
+
+
+  input_state = digitalRead(pin_button_car);
+  if (input_state != last_button_car) {
+    last_button_car = input_state;
+
+    if (input_state == HIGH) {
+      client.publish(topic_button_car, "1");
+    }
+    else {
+      client.publish(topic_button_car, "0");
+    }
+
+    Serial.print("Button open for car: ");
+    Serial.println(input_state);
+  }
+
+
+  input_state = digitalRead(pin_button_pedestrian);
+  if (input_state != last_button_pedestrian) {
+    last_button_pedestrian = input_state;
+
+    if (input_state == HIGH) {
+      client.publish(topic_button_pedestrian, "1");
+    }
+    else {
+      client.publish(topic_button_pedestrian, "0");
+    }
+
+    Serial.print("Button open for pedestrian: ");
+    Serial.println(input_state);
+  }
+
+
+  input_state = digitalRead(pin_photocell);
+  if (input_state != last_photocell) {
+    last_photocell = input_state;
+
+    if (input_state == HIGH) {
+      client.publish(topic_photocell, "1");
+    }
+    else {
+      client.publish(topic_photocell, "0");
+    }
+
+    Serial.print("Photocell: ");
+    Serial.println(input_state);
+  }
+
+
+  input_state = digitalRead(pin_induction_loop);
+  if (input_state != last_induction_loop) {
+    last_induction_loop = input_state;
+
+    if (input_state == HIGH) {
+      client.publish(topic_induction_loop, "1");
+    }
+    else {
+      client.publish(topic_induction_loop, "0");
+    }
+
+    Serial.print("Induction loop: ");
+    Serial.println(input_state);
+  }
+
+
+  input_state = digitalRead(pin_remote_open);
+  if (input_state != last_remote_open) {
+    last_remote_open = input_state;
+
+    if (input_state == HIGH) {
+      client.publish(topic_remote_open, "1");
+    }
+    else {
+      client.publish(topic_remote_open, "0");
+    }
+
+    Serial.print("Remote controller open: ");
+    Serial.println(input_state);
+  }
+
+
+  input_state = digitalRead(pin_remote_close);
+  if (input_state != last_remote_close) {
+    last_remote_close = input_state;
+
+    if (input_state == HIGH) {
+      client.publish(topic_remote_close, "1");
+    }
+    else {
+      client.publish(topic_remote_close, "0");
+    }
+
+    Serial.print("Remote controller close: ");
+    Serial.println(input_state);
+  }
+}
+
+
+
+
+
+
+Ticker timer_check_connectivity(checkAndRepairConnectivity, 120000);         // cals function every 120s
+Ticker timer_maintain_ethernet(maintainEthernet, 1200000);                   // 20min
+Ticker timer_maintain_mqtt(maintainMQTT, 5000);                              // 5s
+Ticker timer_scan_inputs_for_change(scanInputsForChange, 300);               // 300ms
+Ticker timer_mqtt_report_complete_status(MqttReportCompleteStatus, 180000);  // 180s
+Ticker timer_end_relay_impulse(switchRelaysOff, 2000, 1);                     // 2s
+
+
+
+void switchRelayOn(char* serial_message, int relay_pin) {
+  Serial.println(serial_message);
+  //client.publish(topic_relay_accept_command, "1");
+
+  digitalWrite(relay_pin, HIGH);
+  timer_end_relay_impulse.start();
+
+
+  
+}
+
+
+void switchRelaysOff() {
+  digitalWrite(pin_gate_close, LOW);
+  digitalWrite(pin_gate_open_car, LOW);
+  digitalWrite(pin_gate_open_pedestrian, LOW);
+}
+
+
+void setup() {
+  Serial.begin(9600);
+  delay(10);
+  Serial.println("Starting Arduino gate control over HomeAssistant...");
+  setupIoPins();
+
+  reconnectEthernet();
+  reconnectMQTT();
+
+  timer_check_connectivity.start();
+  timer_maintain_ethernet.start();
+  timer_maintain_mqtt.start();
+  timer_scan_inputs_for_change.start();
+  timer_mqtt_report_complete_status.start();
+
+
+}
+
+
+
+void loop() {
+  timer_check_connectivity.update();
+  timer_maintain_ethernet.update();
+  timer_maintain_mqtt.update();
+  timer_scan_inputs_for_change.update();
+
+
+  timer_mqtt_report_complete_status.update();
+  timer_end_relay_impulse.update();
+  if (state_of_timer_end_relay_impulse != timer_end_relay_impulse.state())
+    state_of_timer_end_relay_impulse = timer_end_relay_impulse.state();     // defined this way because I cannot call timer.state() in function callback(). At that part of code timer is not defined yet. And defining timer must be abter timer callback function
+
+
+}
