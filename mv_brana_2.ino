@@ -61,6 +61,7 @@ int last_remote_close;
 int input_state;
 
 // MQTT topics
+const char* topic_device_status                = "g/stat";
 const char* topic_mailbox                      = "g/s/mail";
 const char* topic_closed_limit                 = "g/s/cl_lim";
 const char* topic_relay_close_set              = "g/rl/cl/set";
@@ -82,15 +83,14 @@ int state_of_timer_end_relay_impulse = 0;
 
 // values for your network.
 byte mac[]    = { 0x02, 0x17, 0x3A, 0x4B, 0x5C, 0x6E };
-EthernetClient ethClient;
-PubSubClient mqttClient(ethClient);
-
-const char* mqtt_server      = "192.168.0.2";
+const char* mqtt_server      = "192.168.0.2"; // used for MQTT server and for check connectivity = if webserver is running on same machine at port 80
 const int   mqtt_port        = 1883;
 const char* mqtt_name        = "garduino";
 const char* mqtt_user        = "gate";
 const char* mqtt_password    = "Drainpipe";
 
+EthernetClient ethClient;
+PubSubClient mqttClient(ethClient);
 
 
 
@@ -107,6 +107,7 @@ void setupIoPins() {
   pinMode(pin_button_pedestrian, INPUT_PULLUP);
 
   pinMode(pin_photocell_outside, INPUT_PULLUP);
+  pinMode(pin_photocell_inside,  INPUT_PULLUP);
   pinMode(pin_induction_loop,    INPUT_PULLUP);
 
   pinMode(pin_remote_open,  INPUT_PULLUP);
@@ -162,18 +163,17 @@ boolean reconnectMQTT() {
   mqttClient.setKeepAlive(30);
   mqttClient.setSocketTimeout(40);
 
-  if (mqttClient.connect(mqtt_name, mqtt_user, mqtt_password, "g/stat", 0, true, "offline")) { // display_name, username, password, LastWill_topic, QoS=0, retain=true, LastWill_message
+  if (mqttClient.connect(mqtt_name, mqtt_user, mqtt_password, topic_device_status, 0, true, "offline")) { // display_name, username, password, LastWill_topic, QoS=0, retain=true, LastWill_message
     Serial.print("MQTT connected to broker at ");
     Serial.println(mqtt_server);
 
     
-
+    mqttClient.loop();
     //mqttClient.subscribe(topic_relay_close_set);
     //mqttClient.subscribe(topic_relay_open_car_set);
     //mqttClient.subscribe(topic_relay_open_pedestrian_set);
 
-    MqttReportCompleteStatus();
-
+    mqttReportCompleteStatus();
   }
   else {
     Serial.print("error - code 'pubsubmqttClient state' is: ");
@@ -192,33 +192,33 @@ void maintainMQTT() {
 
 void checkAndRepairConnectivity() {
     if (!mqttClient.connected()) {
-      Serial.print("V hlavní smyčce zjištěno, že nefunguje MQTT komunikace. Kód chyby 'pubsubmqttClient state' je: ");
+      Serial.print("Detected MQTT communication failure in main loop. Error code 'pubsubmqttClient state' is: ");
       Serial.println(mqttClient.state());
 
       if (!ethClient.connect(mqtt_server, 80)) {   // based on my constalation I have webserver on same machine running on port 80. If you don't, you must change way to know if ethernet is working
-        Serial.println("V hlavní smyčce zjištěno, že spadla ethernet komunikace.");
+        Serial.println("Detected Ethernet communication failure in main loop.");
         if (reconnectEthernet()) {
           reconnectMQTT();
           return;
         }
         else {
-          Serial.println("Ethernet se nepodarilo obnovit, preskakuji obnovovani MQTT...");
+          Serial.println("Ethernet failed to recover, skipping reconecting of MQTT...");
           return;
         }
       }
       else {
-        Serial.println("Kontrola Ethernet spojeni - v poradku.");
+        Serial.println("Check Ethernet connection - OK.");
         reconnectMQTT();
       }
     }
     else
-      Serial.println("Periodicka kontrola - MQTT - v poradku.");
+      Serial.println("Periodic MQTT connection check - OK.");
 }
 
 
 
-void MqttReportCompleteStatus() {
-  mqttClient.publish("g/stat", "online");
+void mqttReportCompleteStatus() {
+  mqttClient.publish(topic_device_status, "online");
 
   // here is 9x same logic, repeated for every input
   input_state = digitalRead(pin_sensor_mailbox);
@@ -440,7 +440,7 @@ Ticker timer_check_connectivity(checkAndRepairConnectivity, 120000);         // 
 Ticker timer_maintain_ethernet(maintainEthernet, 1200000);                   // 20min
 Ticker timer_maintain_mqtt(maintainMQTT, 5000);                              // 5s
 Ticker timer_scan_inputs_for_change(scanInputsForChange, 300);               // 300ms
-Ticker timer_mqtt_report_complete_status(MqttReportCompleteStatus, 180000);  // 180s
+Ticker timer_mqtt_report_complete_status(mqttReportCompleteStatus, 180000);  // 180s
 Ticker timer_end_relay_impulse(switchRelaysOff, 2000, 1);                     // 2s
 
 
@@ -471,7 +471,7 @@ void switchRelaysOff() {
 
 void setup() {
   Serial.begin(9600);
-  delay(10);
+  Serial.println();
   Serial.println("Starting Arduino gate control over HomeAssistant...");
   setupIoPins();
 
