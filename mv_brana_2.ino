@@ -64,10 +64,10 @@ int input_state;
 const char* topic_device_status                = "g/stat";
 const char* topic_mailbox                      = "g/s/mail";
 const char* topic_closed_limit                 = "g/s/cl_lim";
-const char* topic_relay_close_set              = "g/rl/cl/set";
-const char* topic_relay_accept_command         = "g/rl/ok";
-const char* topic_relay_open_car_set           = "g/rl/op_car/set";
-const char* topic_relay_open_pedestrian_set    = "g/rl/op_ped/set";
+const char* topic_relay_close_set              = "g/r/cl";
+const char* topic_relay_open_car_set           = "g/r/op_car";
+const char* topic_relay_open_pedestrian_set    = "g/r/op_ped";
+const char* topic_relay_accept_command         = "g/r/ok";
 const char* topic_button_car                   = "g/b/car";
 const char* topic_button_pedestrian            = "g/b/ped";
 const char* topic_photocell_outside            = "g/s/pho_o";
@@ -82,7 +82,7 @@ int state_of_timer_end_relay_impulse = 0;
 
 
 // values for your network.
-byte mac[]    = { 0x02, 0x17, 0x3A, 0x4B, 0x5C, 0x6E };
+const byte mac[]    = { 0x02, 0x17, 0x3A, 0x4B, 0x5C, 0x6E };
 const char* mqtt_server      = "192.168.0.2"; // used for MQTT server and for check connectivity = if webserver is running on same machine at port 80
 const int   mqtt_port        = 1883;
 const char* mqtt_name        = "garduino";
@@ -167,11 +167,9 @@ boolean reconnectMQTT() {
     Serial.print("MQTT connected to broker at ");
     Serial.println(mqtt_server);
 
-    
-    mqttClient.loop();
-    //mqttClient.subscribe(topic_relay_close_set);
-    //mqttClient.subscribe(topic_relay_open_car_set);
-    //mqttClient.subscribe(topic_relay_open_pedestrian_set);
+    mqttClient.subscribe(topic_relay_close_set);
+    mqttClient.subscribe(topic_relay_open_car_set);
+    mqttClient.subscribe(topic_relay_open_pedestrian_set);
 
     mqttReportCompleteStatus();
   }
@@ -280,7 +278,7 @@ void mqttReportCompleteStatus() {
 
 void mqttInfoDroppingSwitchCommands() {
   Serial.println("Skipping MQTT command. Already timing previous command of relay impulse. Only 1 relay can be active in same time.");
-  //mqttClient.publish(topic_relay_accept_command, "0");
+  mqttClient.publish(topic_relay_accept_command, "0");
 }
 
 
@@ -446,7 +444,12 @@ Ticker timer_end_relay_impulse(switchRelaysOff, 2000, 1);                     //
 
 
 void callback(char* topic, byte* payload, unsigned int length) {
-
+  byte* p = (byte*)malloc(length);
+  // Copy the payload to the new buffer
+  memcpy(p,payload,length);
+  mqttClient.publish("outTopic", p, length);
+  // Free the memory
+  free(p);
 }
 
 
@@ -456,7 +459,7 @@ void switchRelayOn(char* serial_message, int relay_pin) {
   timer_end_relay_impulse.start();
 
   Serial.println(serial_message);
-  //mqttClient.publish(topic_relay_accept_command, "1");
+  mqttClient.publish(topic_relay_accept_command, "1");
 }
 
 
@@ -465,7 +468,7 @@ void switchRelaysOff() {
   digitalWrite(pin_relay_open_car, LOW);
   digitalWrite(pin_relay_open_pedestrian, LOW);
 
-  //mqttClient.publish(topic_relay_accept_command, "0");
+  mqttClient.publish(topic_relay_accept_command, "0");
 }
 
 
