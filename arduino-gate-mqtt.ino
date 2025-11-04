@@ -18,10 +18,37 @@
 * marek@vach.cz
 */
 
-#include <SPI.h>
 #include <Ethernet.h>
-#include <PubSubClient.h>
+#include <MQTT.h>
 #include "Ticker.h"
+
+// MQTT topics
+const char* topic_connect_status                 = "g/connect";
+const char* topic_mailbox                        = "g/s/mail";
+const char* topic_gate_state                     = "g/state";
+const char* topic_relay_close_set                = "g/r/cl/set";
+const char* topic_relay_close_response           = "g/r/cl/resp";
+const char* topic_relay_open_car_set             = "g/r/op_car/set";
+const char* topic_relay_open_car_response        = "g/r/op_car/resp";
+const char* topic_relay_open_pedestrian_set      = "g/r/op_ped/set";
+const char* topic_relay_open_pedestrian_response = "g/r/op_ped/resp";
+const char* topic_log_action                     = "g/l/action";
+
+// values for your network.
+byte mac[]    = { 0x02, 0x17, 0x3A, 0x4B, 0x5C, 0x6E };
+const char* mqtt_server      = "192.168.0.2"; // used for MQTT server and for check connectivity = if webserver is running on same machine at port 80
+const int   mqtt_port        = 1883;
+const char* mqtt_name        = "garduino";
+const char* mqtt_user        = "gate";
+const char* mqtt_password    = "Drainpipe";
+
+EthernetClient ethClient;
+MQTTClient mqttClient(128);
+
+// MQTT communication variables
+String received_topic = ""; 
+String received_message = "";
+String log_message = "";
 
 
 // HW pinout section
@@ -60,73 +87,6 @@ int last_remote_close;
 
 int input_state;
 
-// MQTT topics
-const char* topic_device_status                = "g/stat";
-const char* topic_mailbox                      = "g/s/mail";
-const char* topic_closed_limit                 = "g/s/cl_lim";
-const char* topic_relay_close_set              = "g/r/cl";
-const char* topic_relay_open_car_set           = "g/r/op_car";
-const char* topic_relay_open_pedestrian_set    = "g/r/op_ped";
-const char* topic_relay_accept_command         = "g/r/ok";
-const char* topic_button_car                   = "g/b/car";
-const char* topic_button_pedestrian            = "g/b/ped";
-const char* topic_photocell_outside            = "g/s/pho_o";
-const char* topic_photocell_inside             = "g/s/pho_i";
-const char* topic_induction_loop               = "g/s/ind";
-const char* topic_remote_open                  = "g/rm/op";
-const char* topic_remote_close                 = "g/rm/cl";
-
-
-// timers are defined at bottom before setup() function
-int state_of_timer_end_relay_impulse = 0;
-
-
-// values for your network.
-const byte mac[]    = { 0x02, 0x17, 0x3A, 0x4B, 0x5C, 0x6E };
-const char* mqtt_server      = "192.168.0.2"; // used for MQTT server and for check connectivity = if webserver is running on same machine at port 80
-const int   mqtt_port        = 1883;
-const char* mqtt_name        = "garduino";
-const char* mqtt_user        = "gate";
-const char* mqtt_password    = "Drainpipe";
-
-EthernetClient ethClient;
-PubSubClient mqttClient(ethClient);
-
-
-
-
-void setupIoPins() {
-  pinMode(pin_sensor_mailbox, INPUT_PULLUP);
-  pinMode(pin_sensor_closed,  INPUT_PULLUP);
-
-  pinMode(pin_relay_close,           OUTPUT);
-  pinMode(pin_relay_open_car,        OUTPUT);
-  pinMode(pin_relay_open_pedestrian, OUTPUT);
-
-  pinMode(pin_button_car,        INPUT_PULLUP);
-  pinMode(pin_button_pedestrian, INPUT_PULLUP);
-
-  pinMode(pin_photocell_outside, INPUT_PULLUP);
-  pinMode(pin_photocell_inside,  INPUT_PULLUP);
-  pinMode(pin_induction_loop,    INPUT_PULLUP);
-
-  pinMode(pin_remote_open,  INPUT_PULLUP);
-  pinMode(pin_remote_close, INPUT_PULLUP);
-
-  digitalWrite(pin_relay_close,           LOW);
-  digitalWrite(pin_relay_open_car,        LOW);
-  digitalWrite(pin_relay_open_pedestrian, LOW);
-
-  last_sensor_mailbox    = digitalRead(pin_sensor_mailbox);
-  last_sensor_closed     = digitalRead(pin_sensor_closed);
-  last_button_car        = digitalRead(pin_button_car);
-  last_button_pedestrian = digitalRead(pin_button_pedestrian);
-  last_photocell_outside = digitalRead(pin_photocell_outside);
-  last_photocell_inside  = digitalRead(pin_photocell_inside);
-  last_induction_loop    = digitalRead(pin_induction_loop);
-  last_remote_open       = digitalRead(pin_remote_open);
-  last_remote_close      = digitalRead(pin_remote_close);
-}
 
 
 
@@ -147,39 +107,43 @@ boolean reconnectEthernet() {
 }
 
 
-
 void maintainEthernet() {
   Ethernet.maintain();
 }
 
 
-
-boolean reconnectMQTT() {
-  Serial.println("Connecting MQTT...");
+void reconnectMQTT() {
   mqttClient.disconnect();
-  mqttClient.setServer(mqtt_server, mqtt_port);
-  mqttClient.setCallback(callback);
-  mqttClient.setBufferSize(512);
+  mqttClient.begin(mqtt_server, mqtt_port, ethClient);
+  mqttClient.onMessage(messageReceived);
+  mqttClient.setWill(topic_connect_status, "offline", true, 0);  // retained, QoS
   mqttClient.setKeepAlive(30);
-  mqttClient.setSocketTimeout(40);
+  mqttClient.setTimeout(40);
 
-  if (mqttClient.connect(mqtt_name, mqtt_user, mqtt_password, topic_device_status, 0, true, "offline")) { // display_name, username, password, LastWill_topic, QoS=0, retain=true, LastWill_message
-    Serial.print("MQTT connected to broker at ");
+  Serial.println("Connecting MQTT...");
+  mqttClient.connect(mqtt_name, mqtt_user, mqtt_password);
+  delay(1500);
+
+  if (mqttClient.connected()){
+    Serial.print("MQTT connected to server ");
     Serial.println(mqtt_server);
 
+    mqttClient.publish(topic_connect_status, "online");
     mqttClient.subscribe(topic_relay_close_set);
     mqttClient.subscribe(topic_relay_open_car_set);
     mqttClient.subscribe(topic_relay_open_pedestrian_set);
-
-    mqttReportCompleteStatus();
-  }
+  } 
   else {
-    Serial.print("error - code 'pubsubmqttClient state' is: ");
-    Serial.println(mqttClient.state());
-  }
-  return mqttClient.connected();
-}
+    Serial.print("error - MQTT library code is: ");
+    Serial.println(mqttClient.lastError());
+  } 
+} 
 
+
+void messageReceived(String &topic, String &payload) {
+  received_topic = topic;
+  received_message = payload;
+}
 
 
 void maintainMQTT() {
@@ -187,11 +151,9 @@ void maintainMQTT() {
 }
 
 
-
 void checkAndRepairConnectivity() {
     if (!mqttClient.connected()) {
-      Serial.print("Detected MQTT communication failure in main loop. Error code 'pubsubmqttClient state' is: ");
-      Serial.println(mqttClient.state());
+      Serial.println("Detected MQTT communication failure in main loop.");
 
       if (!ethClient.connect(mqtt_server, 80)) {   // based on my constalation I have webserver on same machine running on port 80. If you don't, you must change way to know if ethernet is working
         Serial.println("Detected Ethernet communication failure in main loop.");
@@ -215,266 +177,59 @@ void checkAndRepairConnectivity() {
 
 
 
-void mqttReportCompleteStatus() {
-  mqttClient.publish(topic_device_status, "online");
 
-  // here is 9x same logic, repeated for every input
-  input_state = digitalRead(pin_sensor_mailbox);
-    if (input_state == HIGH)
-      mqttClient.publish(topic_mailbox, "1");
-    else
-      mqttClient.publish(topic_mailbox, "0");
+void setupIoPins() {
+  pinMode(pin_sensor_mailbox, INPUT_PULLUP);
+  pinMode(pin_sensor_closed,  INPUT_PULLUP);
 
-  input_state = digitalRead(pin_sensor_closed);
-    if (input_state == HIGH)
-      mqttClient.publish(topic_closed_limit, "1");
-    else
-      mqttClient.publish(topic_closed_limit, "0");
+  pinMode(pin_relay_close,           OUTPUT);
+  pinMode(pin_relay_open_car,        OUTPUT);
+  pinMode(pin_relay_open_pedestrian, OUTPUT);
 
-  input_state = digitalRead(pin_button_car);
-    if (input_state == HIGH)
-      mqttClient.publish(topic_button_car, "1");
-    else
-      mqttClient.publish(topic_button_car, "0");
+  pinMode(pin_button_car,        INPUT_PULLUP);
+  pinMode(pin_button_pedestrian, INPUT_PULLUP);
 
-  input_state = digitalRead(pin_button_pedestrian);
-    if (input_state == HIGH)
-      mqttClient.publish(topic_button_pedestrian, "1");
-    else
-      mqttClient.publish(topic_button_pedestrian, "0");
+  pinMode(pin_photocell_outside, INPUT_PULLUP);
+  pinMode(pin_photocell_inside,  INPUT_PULLUP);
+  pinMode(pin_induction_loop,    INPUT_PULLUP);
 
-  input_state = digitalRead(pin_photocell_outside);
-    if (input_state == HIGH)
-      mqttClient.publish(topic_photocell_outside, "1");
-    else
-      mqttClient.publish(topic_photocell_outside, "0");
+  pinMode(pin_remote_open,  INPUT_PULLUP);
+  pinMode(pin_remote_close, INPUT_PULLUP);
 
-  input_state = digitalRead(pin_photocell_inside);
-    if (input_state == HIGH)
-      mqttClient.publish(topic_photocell_inside, "1");
-    else
-      mqttClient.publish(topic_photocell_inside, "0");
-
-  input_state = digitalRead(pin_induction_loop);
-    if (input_state == HIGH)
-      mqttClient.publish(topic_induction_loop, "1");
-    else
-      mqttClient.publish(topic_induction_loop, "0");
-
-  input_state = digitalRead(pin_remote_open);
-    if (input_state == HIGH)
-      mqttClient.publish(topic_remote_open, "1");
-    else
-      mqttClient.publish(topic_remote_open, "0");
-
-  input_state = digitalRead(pin_remote_close);
-    if (input_state == HIGH)
-      mqttClient.publish(topic_remote_close, "1");
-    else
-      mqttClient.publish(topic_remote_close, "0");
+  //turnRelaysOff();
+  digitalWrite(pin_relay_close,           LOW);
+  digitalWrite(pin_relay_open_car,        LOW);
+  digitalWrite(pin_relay_open_pedestrian, LOW);
+/*
+  last_sensor_mailbox    = digitalRead(pin_sensor_mailbox);
+  last_sensor_closed     = digitalRead(pin_sensor_closed);
+  last_button_car        = digitalRead(pin_button_car);
+  last_button_pedestrian = digitalRead(pin_button_pedestrian);
+  last_photocell_outside = digitalRead(pin_photocell_outside);
+  last_photocell_inside  = digitalRead(pin_photocell_inside);
+  last_induction_loop    = digitalRead(pin_induction_loop);
+  last_remote_open       = digitalRead(pin_remote_open);
+  last_remote_close      = digitalRead(pin_remote_close);
+*/
 }
 
-
-
-void mqttInfoDroppingSwitchCommands() {
-  Serial.println("Skipping MQTT command. Already timing previous command of relay impulse. Only 1 relay can be active in same time.");
-  mqttClient.publish(topic_relay_accept_command, "0");
+void turnRelaysOff() {
+  digitalWrite(pin_relay_close,           LOW);
+  digitalWrite(pin_relay_open_car,        LOW);
+  digitalWrite(pin_relay_open_pedestrian, LOW);
+  Serial.println("Všechna relé vypnuta.");
 }
-
-
-
-void scanInputsForChange() {
-  // here is 9x same logic, repeated for every input
-  input_state = digitalRead(pin_sensor_mailbox);
-  if (input_state != last_sensor_mailbox) {
-    last_sensor_mailbox = input_state;
-
-    if (input_state == HIGH) {
-      mqttClient.publish(topic_mailbox, "1");
-    }
-    else {
-      mqttClient.publish(topic_mailbox, "0");
-    }
-
-    Serial.print("Mailbox: ");
-    Serial.println(input_state);
-  }
-
-
-  input_state = digitalRead(pin_sensor_closed);
-  if (input_state != last_sensor_closed) {
-    last_sensor_closed = input_state;
-
-    if (input_state == HIGH) {
-      mqttClient.publish(topic_closed_limit, "1");
-    }
-    else {
-      mqttClient.publish(topic_closed_limit, "0");
-    }
-
-    Serial.print("Sensor closed: ");
-    Serial.println(input_state);
-  }
-
-
-  input_state = digitalRead(pin_button_car);
-  if (input_state != last_button_car) {
-    last_button_car = input_state;
-
-    if (input_state == HIGH) {
-      mqttClient.publish(topic_button_car, "1");
-    }
-    else {
-      mqttClient.publish(topic_button_car, "0");
-    }
-
-    Serial.print("Button open for car: ");
-    Serial.println(input_state);
-  }
-
-
-  input_state = digitalRead(pin_button_pedestrian);
-  if (input_state != last_button_pedestrian) {
-    last_button_pedestrian = input_state;
-
-    if (input_state == HIGH) {
-      mqttClient.publish(topic_button_pedestrian, "1");
-    }
-    else {
-      mqttClient.publish(topic_button_pedestrian, "0");
-    }
-
-    Serial.print("Button open for pedestrian: ");
-    Serial.println(input_state);
-  }
-
-
-  input_state = digitalRead(pin_photocell_outside);
-  if (input_state != last_photocell_outside) {
-    last_photocell_outside = input_state;
-
-    if (input_state == HIGH) {
-      mqttClient.publish(topic_photocell_outside, "1");
-    }
-    else {
-      mqttClient.publish(topic_photocell_outside, "0");
-    }
-
-    Serial.print("Photocell outside: ");
-    Serial.println(input_state);
-  }
-
-
-  input_state = digitalRead(pin_photocell_inside);
-  if (input_state != last_photocell_inside) {
-    last_photocell_inside = input_state;
-
-    if (input_state == HIGH) {
-      mqttClient.publish(topic_photocell_inside, "1");
-    }
-    else {
-      mqttClient.publish(topic_photocell_inside, "0");
-    }
-
-    Serial.print("Photocell inside: ");
-    Serial.println(input_state);
-  }
-
-
-  input_state = digitalRead(pin_induction_loop);
-  if (input_state != last_induction_loop) {
-    last_induction_loop = input_state;
-
-    if (input_state == HIGH) {
-      mqttClient.publish(topic_induction_loop, "1");
-    }
-    else {
-      mqttClient.publish(topic_induction_loop, "0");
-    }
-
-    Serial.print("Induction loop: ");
-    Serial.println(input_state);
-  }
-
-
-  input_state = digitalRead(pin_remote_open);
-  if (input_state != last_remote_open) {
-    last_remote_open = input_state;
-
-    if (input_state == HIGH) {
-      mqttClient.publish(topic_remote_open, "1");
-    }
-    else {
-      mqttClient.publish(topic_remote_open, "0");
-    }
-
-    Serial.print("Remote controller open: ");
-    Serial.println(input_state);
-  }
-
-
-  input_state = digitalRead(pin_remote_close);
-  if (input_state != last_remote_close) {
-    last_remote_close = input_state;
-
-    if (input_state == HIGH) {
-      mqttClient.publish(topic_remote_close, "1");
-    }
-    else {
-      mqttClient.publish(topic_remote_close, "0");
-    }
-
-    Serial.print("Remote controller close: ");
-    Serial.println(input_state);
-  }
-}
-
-
-
-
 
 
 Ticker timer_check_connectivity(checkAndRepairConnectivity, 120000);         // cals function every 120s
 Ticker timer_maintain_ethernet(maintainEthernet, 1200000);                   // 20min
-Ticker timer_maintain_mqtt(maintainMQTT, 5000);                              // 5s
-Ticker timer_scan_inputs_for_change(scanInputsForChange, 300);               // 300ms
-Ticker timer_mqtt_report_complete_status(mqttReportCompleteStatus, 180000);  // 180s
-Ticker timer_end_relay_impulse(switchRelaysOff, 2000, 1);                     // 2s
+Ticker timer_maintain_mqtt(maintainMQTT, 3000);                              // 3s
+//Ticker timer_relays_off(turnRelaysOff, 5000, 1);                             // 2s repeat 1x
 
-
-
-void callback(char* topic, byte* payload, unsigned int length) {
-  byte* p = (byte*)malloc(length);
-  // Copy the payload to the new buffer
-  memcpy(p,payload,length);
-  mqttClient.publish("outTopic", p, length);
-  // Free the memory
-  free(p);
-}
-
-
-
-void switchRelayOn(char* serial_message, int relay_pin) {
-  digitalWrite(relay_pin, HIGH);
-  timer_end_relay_impulse.start();
-
-  Serial.println(serial_message);
-  mqttClient.publish(topic_relay_accept_command, "1");
-}
-
-
-void switchRelaysOff() {
-  digitalWrite(pin_relay_close, LOW);
-  digitalWrite(pin_relay_open_car, LOW);
-  digitalWrite(pin_relay_open_pedestrian, LOW);
-
-  mqttClient.publish(topic_relay_accept_command, "0");
-}
 
 
 void setup() {
   Serial.begin(9600);
-  Serial.println();
   Serial.println("Starting Arduino gate control over HomeAssistant...");
   setupIoPins();
 
@@ -484,26 +239,44 @@ void setup() {
   timer_check_connectivity.start();
   timer_maintain_ethernet.start();
   timer_maintain_mqtt.start();
-  timer_scan_inputs_for_change.start();
-  timer_mqtt_report_complete_status.start();
-
 
 }
-
-
 
 void loop() {
   timer_check_connectivity.update();
   timer_maintain_ethernet.update();
   timer_maintain_mqtt.update();
-  timer_scan_inputs_for_change.update();
-  timer_mqtt_report_complete_status.update();
-  timer_end_relay_impulse.update();
+  //timer_relays_off.update();
 
-  if (state_of_timer_end_relay_impulse != timer_end_relay_impulse.state()) {
-    state_of_timer_end_relay_impulse = timer_end_relay_impulse.state();     // defined this way because I cannot call timer.state() in function callback(). At that part of code timer is not defined yet. And defining timer must be abter timer callback function
-    Serial.print("Ticker state: ");
-    Serial.println(timer_end_relay_impulse.state());
-  }
+  if (received_message != ""){
+    Serial.println("Incoming MQTT: " + received_topic + " - " + received_message);
+/*
+    if (timer_relays_off.state() == RUNNING) {
+        Serial.println("Detekován tikající timer, nelze provést!");
+    }
+*/
+    if (received_topic == topic_relay_close_set) {
+        mqttClient.publish(topic_relay_close_response, "1");
+        // exec relay
+        Serial.println("Zapínám relé pro zavření a timer pro vypnutí.");
+        //timer_relays_off.start();
+        mqttClient.publish(topic_relay_close_response, "0"); 
+    }
+
+    if (received_topic == topic_relay_open_car_set) {
+        mqttClient.publish(topic_relay_open_car_response, "1");
+        // exec relay
+        mqttClient.publish(topic_relay_open_car_response, "0"); 
+    }
+
+    if (received_topic == topic_relay_open_pedestrian_set) {
+        mqttClient.publish(topic_relay_open_pedestrian_response, "1");
+        // exec relay
+        mqttClient.publish(topic_relay_open_pedestrian_response, "0"); 
+    }
+
+    received_topic = "";
+    received_message = "";
+  } 
 
 }
