@@ -221,13 +221,22 @@ void turnRelaysOff() {
   digitalWrite(pin_relay_close,           LOW);
   digitalWrite(pin_relay_open_car,        LOW);
   digitalWrite(pin_relay_open_pedestrian, LOW);
+
+  mqttClient.publish(topic_relay_close_response, "0");
+  mqttClient.publish(topic_relay_open_car_response, "0");
+  mqttClient.publish(topic_relay_open_pedestrian_response, "0");
 }
+
+void clearMessages(){
+  received_topic[0] = '\0';
+  received_message[0] = '\0';
+} 
 
 
 Ticker timer_check_connectivity(checkAndRepairConnectivity, 120000);         // cals function every 120s
 Ticker timer_maintain_ethernet(maintainEthernet, 1200000);                   // 20min
 Ticker timer_maintain_mqtt(maintainMQTT, 3000);                              // 3s
-
+Ticker timer_relays_off(turnRelaysOff, 2000, 1);                             // 2s repeated 1x
 
 
 void setup() {
@@ -248,6 +257,7 @@ void loop() {
   timer_check_connectivity.update();
   timer_maintain_ethernet.update();
   timer_maintain_mqtt.update();
+  timer_relays_off.update();
 
   if (received_message[0] != '\0') {
       Serial.print(F("Incoming MQTT: "));
@@ -255,30 +265,33 @@ void loop() {
       Serial.print(F(" - "));
       Serial.println(received_message);
 
+      if (timer_relays_off.state() == RUNNING) {
+        Serial.println(F("Dropping, one relay is already running!"));
+        clearMessages();
+      } 
+
       if (strcmp(received_topic, topic_relay_close_set) == 0) {
           mqttClient.publish(topic_relay_close_response, "1");
           Serial.println(F("Activating puls to close gate."));
+          digitalWrite(pin_relay_close, HIGH);
+          timer_relays_off.start();
           
-          mqttClient.publish(topic_relay_close_response, "0"); 
       }
 
       if (strcmp(received_topic, topic_relay_open_car_set) == 0) {
           mqttClient.publish(topic_relay_open_car_response, "1");
           Serial.println(F("Activating puls to open gate for car."));
-
-          mqttClient.publish(topic_relay_open_car_response, "0"); 
+          digitalWrite(pin_relay_open_car, HIGH);
+          timer_relays_off.start();
       }
 
       if (strcmp(received_topic, topic_relay_open_pedestrian_set) == 0) {
           mqttClient.publish(topic_relay_open_pedestrian_response, "1");
           Serial.println(F("Activating puls to open gate for pedestrian."));
-
-          mqttClient.publish(topic_relay_open_pedestrian_response, "0"); 
+          digitalWrite(pin_relay_open_pedestrian, HIGH);
+          timer_relays_off.start();
       }
 
-      // Vyčistit přijaté hodnoty
-      received_topic[0] = '\0';
-      received_message[0] = '\0';
+      clearMessages();
   }
-
 }
