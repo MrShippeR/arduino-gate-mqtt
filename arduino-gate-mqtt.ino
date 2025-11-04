@@ -24,15 +24,15 @@
 
 // MQTT topics
 const char* topic_connect_status                 = "g/connect";
-const char* topic_mailbox                        = "g/s/mail";
+const char* topic_mailbox                        = "g/mail";
 const char* topic_gate_state                     = "g/state";
-const char* topic_relay_close_set                = "g/r/cl/set";
-const char* topic_relay_close_response           = "g/r/cl/resp";
-const char* topic_relay_open_car_set             = "g/r/op_car/set";
-const char* topic_relay_open_car_response        = "g/r/op_car/resp";
-const char* topic_relay_open_pedestrian_set      = "g/r/op_ped/set";
-const char* topic_relay_open_pedestrian_response = "g/r/op_ped/resp";
-const char* topic_log_action                     = "g/l/action";
+const char* topic_relay_close_set                = "g/cl/set";
+const char* topic_relay_close_response           = "g/cl/resp";
+const char* topic_relay_open_car_set             = "g/op_car/set";
+const char* topic_relay_open_car_response        = "g/op_car/resp";
+const char* topic_relay_open_pedestrian_set      = "g/op_ped/set";
+const char* topic_relay_open_pedestrian_response = "g/op_ped/resp";
+const char* topic_log_action                     = "g/action";
 
 // values for your network.
 byte mac[]    = { 0x02, 0x17, 0x3A, 0x4B, 0x5C, 0x6E };
@@ -43,12 +43,14 @@ const char* mqtt_user        = "gate";
 const char* mqtt_password    = "Drainpipe";
 
 EthernetClient ethClient;
-MQTTClient mqttClient(128);
+MQTTClient mqttClient;
 
 // MQTT communication variables
-String received_topic = ""; 
-String received_message = "";
-String log_message = "";
+#define MAX_TOPIC_LEN 16
+#define MAX_PAYLOAD_LEN 7
+char received_topic[MAX_TOPIC_LEN];
+char received_message[MAX_PAYLOAD_LEN];
+
 
 
 // HW pinout section
@@ -73,7 +75,7 @@ const int pin_remote_open = A3;
 const int pin_remote_close = A4;
 // A5 pin free for future use
 
-
+/*
 // Variables to memorize last states
 int last_sensor_mailbox;
 int last_sensor_closed;
@@ -86,22 +88,22 @@ int last_remote_open;
 int last_remote_close;
 
 int input_state;
-
+*/
 
 
 
 boolean reconnectEthernet() {
-  Serial.println("Obtaining IP adress form DHCP...");
+  Serial.println(F("Obtaining IP adress form DHCP..."));
   Ethernet.begin(mac);  // if you want static, you must add second parameter IP
   delay(1500);
 
   if (Ethernet.localIP() != IPAddress(0,0,0,0)) {
-    Serial.print("Success! IP adress is ");
+    Serial.print(F("Success! IP adress is "));
     Serial.println(Ethernet.localIP());
     return true;
   }
   else {
-    Serial.println("error");
+    Serial.println(F("error"));
     return false;
   }
 }
@@ -120,12 +122,12 @@ void reconnectMQTT() {
   mqttClient.setKeepAlive(30);
   mqttClient.setTimeout(40);
 
-  Serial.println("Connecting MQTT...");
+  Serial.println(F("Connecting MQTT..."));
   mqttClient.connect(mqtt_name, mqtt_user, mqtt_password);
   delay(1500);
 
   if (mqttClient.connected()){
-    Serial.print("MQTT connected to server ");
+    Serial.print(F("MQTT connected to server "));
     Serial.println(mqtt_server);
 
     mqttClient.publish(topic_connect_status, "online");
@@ -134,15 +136,20 @@ void reconnectMQTT() {
     mqttClient.subscribe(topic_relay_open_pedestrian_set);
   } 
   else {
-    Serial.print("error - MQTT library code is: ");
+    Serial.print(F("error - MQTT library code is: "));
     Serial.println(mqttClient.lastError());
   } 
 } 
 
 
 void messageReceived(String &topic, String &payload) {
-  received_topic = topic;
-  received_message = payload;
+  topic.toCharArray(received_topic, MAX_TOPIC_LEN);
+  payload.toCharArray(received_message, MAX_PAYLOAD_LEN);
+  //if (mqttClient.droppedMessages() != 0) {
+    Serial.print("Dropped ");
+    Serial.print(mqttClient.droppedMessages());
+    Serial.println(" chars.");
+  //}
 }
 
 
@@ -153,26 +160,26 @@ void maintainMQTT() {
 
 void checkAndRepairConnectivity() {
     if (!mqttClient.connected()) {
-      Serial.println("Detected MQTT communication failure in main loop.");
+      Serial.println(F("Detected MQTT communication failure in main loop."));
 
       if (!ethClient.connect(mqtt_server, 80)) {   // based on my constalation I have webserver on same machine running on port 80. If you don't, you must change way to know if ethernet is working
-        Serial.println("Detected Ethernet communication failure in main loop.");
+        Serial.println(F("Detected Ethernet communication failure in main loop."));
         if (reconnectEthernet()) {
           reconnectMQTT();
           return;
         }
         else {
-          Serial.println("Ethernet failed to recover, skipping reconecting of MQTT...");
+          Serial.println(F("Ethernet failed to recover, skipping reconecting of MQTT..."));
           return;
         }
       }
       else {
-        Serial.println("Check Ethernet connection - OK.");
+        Serial.println(F("Check Ethernet connection - OK."));
         reconnectMQTT();
       }
     }
     else
-      Serial.println("Periodic MQTT connection check - OK.");
+      Serial.println(F("Periodic MQTT connection check - OK."));
 }
 
 
@@ -196,10 +203,7 @@ void setupIoPins() {
   pinMode(pin_remote_open,  INPUT_PULLUP);
   pinMode(pin_remote_close, INPUT_PULLUP);
 
-  //turnRelaysOff();
-  digitalWrite(pin_relay_close,           LOW);
-  digitalWrite(pin_relay_open_car,        LOW);
-  digitalWrite(pin_relay_open_pedestrian, LOW);
+  turnRelaysOff();
 /*
   last_sensor_mailbox    = digitalRead(pin_sensor_mailbox);
   last_sensor_closed     = digitalRead(pin_sensor_closed);
@@ -217,20 +221,18 @@ void turnRelaysOff() {
   digitalWrite(pin_relay_close,           LOW);
   digitalWrite(pin_relay_open_car,        LOW);
   digitalWrite(pin_relay_open_pedestrian, LOW);
-  Serial.println("Všechna relé vypnuta.");
 }
 
 
 Ticker timer_check_connectivity(checkAndRepairConnectivity, 120000);         // cals function every 120s
 Ticker timer_maintain_ethernet(maintainEthernet, 1200000);                   // 20min
 Ticker timer_maintain_mqtt(maintainMQTT, 3000);                              // 3s
-//Ticker timer_relays_off(turnRelaysOff, 5000, 1);                             // 2s repeat 1x
 
 
 
 void setup() {
   Serial.begin(9600);
-  Serial.println("Starting Arduino gate control over HomeAssistant...");
+  Serial.println(F("Starting Arduino gate control over HomeAssistant..."));
   setupIoPins();
 
   reconnectEthernet();
@@ -246,37 +248,37 @@ void loop() {
   timer_check_connectivity.update();
   timer_maintain_ethernet.update();
   timer_maintain_mqtt.update();
-  //timer_relays_off.update();
 
-  if (received_message != ""){
-    Serial.println("Incoming MQTT: " + received_topic + " - " + received_message);
-/*
-    if (timer_relays_off.state() == RUNNING) {
-        Serial.println("Detekován tikající timer, nelze provést!");
-    }
-*/
-    if (received_topic == topic_relay_close_set) {
-        mqttClient.publish(topic_relay_close_response, "1");
-        // exec relay
-        Serial.println("Zapínám relé pro zavření a timer pro vypnutí.");
-        //timer_relays_off.start();
-        mqttClient.publish(topic_relay_close_response, "0"); 
-    }
+  if (received_message[0] != '\0') {
+      Serial.print(F("Incoming MQTT: "));
+      Serial.print(received_topic);
+      Serial.print(F(" - "));
+      Serial.println(received_message);
 
-    if (received_topic == topic_relay_open_car_set) {
-        mqttClient.publish(topic_relay_open_car_response, "1");
-        // exec relay
-        mqttClient.publish(topic_relay_open_car_response, "0"); 
-    }
+      if (strcmp(received_topic, topic_relay_close_set) == 0) {
+          mqttClient.publish(topic_relay_close_response, "1");
+          Serial.println(F("Activating puls to close gate."));
+          
+          mqttClient.publish(topic_relay_close_response, "0"); 
+      }
 
-    if (received_topic == topic_relay_open_pedestrian_set) {
-        mqttClient.publish(topic_relay_open_pedestrian_response, "1");
-        // exec relay
-        mqttClient.publish(topic_relay_open_pedestrian_response, "0"); 
-    }
+      if (strcmp(received_topic, topic_relay_open_car_set) == 0) {
+          mqttClient.publish(topic_relay_open_car_response, "1");
+          Serial.println(F("Activating puls to open gate for car."));
 
-    received_topic = "";
-    received_message = "";
-  } 
+          mqttClient.publish(topic_relay_open_car_response, "0"); 
+      }
+
+      if (strcmp(received_topic, topic_relay_open_pedestrian_set) == 0) {
+          mqttClient.publish(topic_relay_open_pedestrian_response, "1");
+          Serial.println(F("Activating puls to open gate for pedestrian."));
+
+          mqttClient.publish(topic_relay_open_pedestrian_response, "0"); 
+      }
+
+      // Vyčistit přijaté hodnoty
+      received_topic[0] = '\0';
+      received_message[0] = '\0';
+  }
 
 }
