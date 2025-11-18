@@ -29,7 +29,7 @@
 // MQTT topics
 const char* topic_connect_status                 = "g/connect";
 const char* topic_mailbox                        = "g/mail";
-const char* topic_gate_mode                      = "g/mode";          // 0 = Opened, 1 = Closed, 2 = Opening, 3 = Closing
+const char* topic_gate_mode                      = "g/mode";          // 0 = Opened, 1 = Closed, 2 = Opening, 3 = Closing, 4 = Offline
 const char* topic_relay_close_set                = "g/cl/set";
 const char* topic_relay_close_response           = "g/cl/resp";
 const char* topic_relay_open_car_set             = "g/op_car/set";
@@ -147,7 +147,6 @@ void reconnectMQTT() {
     Serial.print(F("MQTT connected to server "));
     Serial.println(mqtt_server);
 
-    // mqttClient.publish(topic_connect_status, "online");
     MqttPeriodicReport();
 
     mqttClient.subscribe(topic_relay_close_set);
@@ -285,7 +284,6 @@ void checkInputsForChanges() {
       continue;
 
     input_state = digitalRead ( input_pins[i] );
-
     if ( input_state != *last_inputs[i] ) {
       *last_inputs[i] = input_state;
       mqttClient.publish (mqtt_topics[i], input_state ? "1" : "0");
@@ -293,7 +291,6 @@ void checkInputsForChanges() {
       Serial.print( mqtt_topics[i] );
       Serial.print(F(" changed state to: "));
       Serial.println( input_state );
-      
     }
   }
 }
