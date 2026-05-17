@@ -25,38 +25,31 @@
 #include "Ticker.h"
 
 
-
 // MQTT topics
 const char* topic_connect_status                 = "g/connect";
-const char* topic_mailbox                        = "g/mail";
-const char* topic_motor_running                  = "g/m/run";
-const char* topic_relay_close_set                = "g/cl/set";
-const char* topic_relay_close_response           = "g/cl/resp";
-const char* topic_relay_open_car_set             = "g/op_car/set";
-const char* topic_relay_open_car_response        = "g/op_car/resp";
-//const char* topic_relay_open_pedestrian_set      = "g/op_ped/set";
-//const char* topic_relay_open_pedestrian_response = "g/op_ped/resp";
-const char* topic_limiter_closed                 = "g/l/clsd";
-const char* topic_limiter_opened                 = "g/l/opnd";
+const char* topic_relay_open_pulse               = "g/r/o";
+const char* topic_relay_open_automatic           = "g/r/oat";
 const char* topic_photocell_outside              = "g/ph/out";
 const char* topic_photocell_inside               = "g/ph/in";
 const char* topic_induction_loop                 = "g/ind";
-const char* topic_open_pulse                     = "g/o/p";
-const char* topic_open_automatic                 = "g/o/a";
-
+const char* topic_input_open_pulse               = "g/i/o";
+const char* topic_input_open_automatic           = "g/i/oat";
+const char* topic_mailbox                        = "d/mail";
+const char* topic_home_ring                      = "d/ring";
+const char* topic_gate_position                  = "g/pos";
 
 
 // values for your network.
 byte mac[]    = { 0x02, 0x17, 0x3A, 0x4B, 0x5C, 0x6E };
-const char* mqtt_server      = "192.168.0.8"; // used for MQTT server and for check connectivity = if webserver is running on same machine at port 80
+const char* mqtt_server      = "192.168.0.8";
 const int   mqtt_port        = 1883;
+const int   web_port_ha      = 8123;
 const char* mqtt_name        = "garduino";
 const char* mqtt_user        = "gate";
 const char* mqtt_password    = "Drainpipe";
 
 EthernetClient ethClient;
 MQTTClient mqttClient;
-
 
 
 // MQTT communication variables
@@ -66,56 +59,51 @@ char received_topic[MAX_TOPIC_LEN];
 char received_message[MAX_PAYLOAD_LEN];
 
 
-
 // HW pinout section
 const int pin_sensor_mailbox = 2;
 const int pin_motor_running = 3;
 
 // Relay module **never use more relay then one at same time because of internal Arduino power supply will overload
 // pin 4 reserved for chip select of SD card.
-//const int pin_relay_close = 5;
-const int pin_relay_open_car = 6;
-//const int pin_relay_open_pedestrian = 7;
+//const int pin_relay_1 = 5;    // unused
+const int pin_relay_open = 6;
+//const int pin_relay_3 = 7;    // unused
 
-const int pin_limiter_closed = 8;
-const int pin_limiter_opened = 9;
+const int pin_limiter_closed = 9;
+const int pin_limiter_opened = 8;
 // pin 10 reserved for chip select of Ethernet W5100
 
 const int pin_photocell_outside = A0;
 const int pin_photocell_inside = A1;
 const int pin_induction_loop = A2;
 
-const int pin_open_pulse = A3;
-const int pin_open_automatic = A4;
-// A5 pin free for future use
-
+const int pin_input_open_pulse = A3;
+const int pin_input_open_automatic = A4;
+const int pin_home_ring = A5;
 
 
 // Variables to memorize last states
 int last_sensor_mailbox;
-int last_motor_running;
-int last_limiter_closed;
-int last_limiter_opened;
 int last_photocell_outside;
 int last_photocell_inside;
 int last_induction_loop;
-int last_open_pulse;
-int last_open_automatic;
+int last_input_open_pulse;
+int last_input_open_automatic;
+int last_home_ring;
+int last_gate_position;
 
 int input_state;
+int gate_position;
 
-// Timing for gate mode view
-const unsigned long time_of_gate_moving = 7000;  // Time in millis for blocking override topic_gate_mode when is Opening or Closing.
-bool gate_is_moving = false;  // Control variable to block updating of pin_sensor_closed for time given line upper.
 
 
 boolean reconnectEthernet() {
-  Serial.println(F("Obtaining IP adress form DHCP..."));
+  Serial.println(F("IP from DHCP..."));
   Ethernet.begin(mac);  // if you want static, you must add second parameter IP
   delay(1500);
 
   if (Ethernet.localIP() != IPAddress(0,0,0,0)) {
-    Serial.print(F("Success! IP adress is "));
+    Serial.print(F("Success! Have "));
     Serial.println(Ethernet.localIP());
     return true;
   }
@@ -149,9 +137,8 @@ void reconnectMQTT() {
 
     MqttPeriodicReport();
 
-    //mqttClient.subscribe(topic_relay_close_set);
-    mqttClient.subscribe(topic_relay_open_car_set);
-    //mqttClient.subscribe(topic_relay_open_pedestrian_set);
+    mqttClient.subscribe(topic_relay_open_pulse);
+    mqttClient.subscribe(topic_relay_open_automatic);
   } 
   else {
     Serial.print(F("error - MQTT library code is: "));
@@ -162,14 +149,6 @@ void reconnectMQTT() {
 
 void MqttPeriodicReport() {
   mqttClient.publish(topic_connect_status, "online");
-
-  input_state = digitalRead( pin_sensor_mailbox );
-  mqttClient.publish (topic_mailbox, input_state ? "1" : "0");
-
-  if (gate_is_moving == false) {
-    input_state = digitalRead( pin_motor_running );
-    mqttClient.publish (topic_motor_running, input_state ? "1" : "0");
-  }
 }
 
 
@@ -189,99 +168,111 @@ void maintainMQTT() {
 
 void checkAndRepairConnectivity() {
     if (!mqttClient.connected()) {
-      Serial.println(F("Detected MQTT communication failure in main loop."));
+      Serial.println(F("MQTT failure."));
 
-      if (!ethClient.connect(mqtt_server, 80)) {   // based on my constalation I have webserver on same machine running on port 80. If you don't, you must change way to know if ethernet is working
-        Serial.println(F("Detected Ethernet communication failure in main loop."));
+      if (!ethClient.connect(mqtt_server, web_port_ha)) {    // check if HA is online = LAN is working
+        Serial.println(F("Ethernet failure."));
         if (reconnectEthernet()) {
           reconnectMQTT();
           return;
         }
         else {
-          Serial.println(F("Ethernet failed to recover, skipping reconecting of MQTT..."));
+          Serial.println(F("so skipping MQTT too."));
           return;
         }
       }
       else {
-        Serial.println(F("Check Ethernet connection - OK."));
+        Serial.println(F("Ethernet connection OK."));
         reconnectMQTT();
       }
     }
     else
-      Serial.println(F("Periodic MQTT connection check - OK."));
+      Serial.println(F("MQTT connection OK."));
 }
 
 
 void setupIoPins() {
-  pinMode(pin_sensor_mailbox, INPUT_PULLUP);
   pinMode(pin_motor_running,  INPUT);
-
-  //pinMode(pin_relay_close,           OUTPUT);
-  pinMode(pin_relay_open_car,        OUTPUT);
-  //pinMode(pin_relay_open_pedestrian, OUTPUT);
-
-  pinMode(pin_limiter_closed,        INPUT);
+  pinMode(pin_relay_open, OUTPUT);
+  digitalWrite(pin_relay_open, LOW);
+  
+  pinMode(pin_limiter_closed, INPUT);
   pinMode(pin_limiter_opened, INPUT);
 
   pinMode(pin_photocell_outside, INPUT);
   pinMode(pin_photocell_inside,  INPUT);
   pinMode(pin_induction_loop,    INPUT);
 
-  pinMode(pin_open_pulse,  INPUT);
-  pinMode(pin_open_automatic, INPUT);
+  pinMode(pin_input_open_pulse,     INPUT);
+  pinMode(pin_input_open_automatic, INPUT);
 
-  turnRelaysOff();
+  pinMode(pin_sensor_mailbox, INPUT_PULLUP);
+  pinMode(pin_home_ring,      INPUT);
 
-  last_sensor_mailbox    = digitalRead(pin_sensor_mailbox);
-  last_motor_running     = digitalRead(pin_motor_running);
-  last_limiter_closed    = digitalRead(pin_limiter_closed);
-  last_limiter_opened    = digitalRead(pin_limiter_opened);
-  last_photocell_outside = digitalRead(pin_photocell_outside);
-  last_photocell_inside  = digitalRead(pin_photocell_inside);
-  last_induction_loop    = digitalRead(pin_induction_loop);
-  last_open_pulse        = digitalRead(pin_open_pulse);
-  last_open_automatic    = digitalRead(pin_open_automatic);
+  
+  last_photocell_outside    = digitalRead(pin_photocell_outside);
+  last_photocell_inside     = digitalRead(pin_photocell_inside);
+  last_induction_loop       = digitalRead(pin_induction_loop);
+  last_input_open_pulse     = digitalRead(pin_input_open_pulse);
+  last_input_open_automatic = digitalRead(pin_input_open_automatic);
+  last_sensor_mailbox       = digitalRead(pin_sensor_mailbox);
+  last_home_ring            = digitalRead(pin_home_ring);
 }
 
 
-void checkInputsForChanges() {
-  const int input_pins[9]    = {
-                                pin_sensor_mailbox, 
-                                pin_motor_running, 
-                                pin_limiter_closed, 
-                                pin_limiter_opened, 
-                                pin_photocell_outside, 
-                                pin_photocell_inside, 
-                                pin_induction_loop, 
-                                pin_open_pulse, 
-                                pin_open_automatic
-                              };
-  int* last_inputs[9]        = {
-                                &last_sensor_mailbox, 
-                                &last_motor_running, 
-                                &last_limiter_closed, 
-                                &last_limiter_opened, 
-                                &last_photocell_outside, 
-                                &last_photocell_inside, 
-                                &last_induction_loop, 
-                                &last_open_pulse, 
-                                &last_open_automatic
-                              };
-  const char* mqtt_topics[9] = {
-                                topic_mailbox, 
-                                topic_motor_running, 
-                                topic_limiter_closed, 
-                                topic_limiter_opened, 
-                                topic_photocell_outside, 
-                                topic_photocell_inside, 
-                                topic_induction_loop, 
-                                topic_open_pulse, 
-                                topic_open_automatic
-                              };
 
-  for (int i = 0; i < 9; i++) {
-    if ( i == 1 && gate_is_moving )
-      continue;
+int returnGatePosition() {    // 1=running, 2=closed, 3=opened, 4=unkown_position 5=auto_close
+  if ( digitalRead(pin_motor_running) == 1 )
+     input_state = 3;
+  else if ( digitalRead(pin_limiter_closed) == 1 )
+    input_state = 1;
+  else if ( digitalRead(pin_limiter_opened) == 1 )
+    input_state = 2;
+  else
+    input_state = 4;
+
+  return input_state;
+}
+
+
+
+void checkInputsForChanges() {
+  const int key_count = 8;    // number of elements in array
+
+  const int input_pins[key_count]    = {
+                                        pin_photocell_outside, 
+                                        pin_photocell_inside, 
+                                        pin_induction_loop, 
+                                        pin_input_open_pulse, 
+                                        pin_input_open_automatic,
+                                        pin_sensor_mailbox, 
+                                        pin_home_ring,
+                                        gate_position  // not pin, calculated variable, must be last in array
+                                       };
+  int* last_inputs[key_count]        = {
+                                        &last_photocell_outside, 
+                                        &last_photocell_inside, 
+                                        &last_induction_loop, 
+                                        &last_input_open_pulse, 
+                                        &last_input_open_automatic,
+                                        &last_sensor_mailbox,
+                                        &last_home_ring,
+                                        &last_gate_position
+                                       };
+  const char* mqtt_topics[key_count] = {
+                                        topic_photocell_outside, 
+                                        topic_photocell_inside, 
+                                        topic_induction_loop, 
+                                        topic_input_open_pulse, 
+                                        topic_input_open_automatic,
+                                        topic_mailbox, 
+                                        topic_home_ring,
+                                        topic_gate_position
+                                       };
+
+  for (int i = 0; i < key_count; i++) {
+
+    if ( i == key_count )
 
     input_state = digitalRead ( input_pins[i] );
     if ( input_state != *last_inputs[i] ) {
@@ -296,22 +287,6 @@ void checkInputsForChanges() {
 }
 
 
-void turnRelaysOff() {
-  //digitalWrite(pin_relay_close,           LOW);
-  digitalWrite(pin_relay_open_car,        LOW);
-  //digitalWrite(pin_relay_open_pedestrian, LOW);
-
-  //mqttClient.publish(topic_relay_close_response, "0");
-  mqttClient.publish(topic_relay_open_car_response, "0");
-  //mqttClient.publish(topic_relay_open_pedestrian_response, "0");
-}
-
-
-void gateIsMoving() {
-  gate_is_moving = false;
-  last_motor_running = 2; // force refresh of input in next comparing cycle
-}
-
 
 void clearMessages() {
   received_topic[0] = '\0';
@@ -319,18 +294,16 @@ void clearMessages() {
 } 
 
 
+
 Ticker timer_check_connectivity(checkAndRepairConnectivity, 120000);         // cals function every 120s
 Ticker timer_maintain_ethernet(maintainEthernet, 1200000);                   // 20min
 Ticker timer_maintain_mqtt(maintainMQTT, 1000);                              // 1s
-Ticker timer_relays_off(turnRelaysOff, 2000, 1);                             // 2s repeated 1x
-Ticker timer_check_inputs(checkInputsForChanges, 1000);                      // 1s
+Ticker timer_check_inputs(checkInputsForChanges, 100);                       // 0.1s
 Ticker timer_mqtt_periodic_report(MqttPeriodicReport, 300000);               // 5min
-Ticker timer_gate_is_moving(gateIsMoving, time_of_gate_moving, 1);           // 7s repeated 1x
 
 
 void setup() {
   Serial.begin(9600);
-  Serial.println(F("Starting Arduino gate control over HomeAssistant..."));
   setupIoPins();
 
   reconnectEthernet();
@@ -348,25 +321,17 @@ void loop() {
   timer_check_connectivity.update();
   timer_maintain_ethernet.update();
   timer_maintain_mqtt.update();
-  timer_relays_off.update();
   timer_check_inputs.update();
   timer_mqtt_periodic_report.update();
-  timer_gate_is_moving.update();
 
   if (received_message[0] != '\0') {
       Serial.print(F("Incoming MQTT: "));
       Serial.print(received_topic);
-      Serial.print(F(" - "));
+      Serial.print(F(": "));
       Serial.println(received_message);
 
-      if (timer_relays_off.state() == RUNNING) {
-        Serial.println(F("Dropping, one relay is already running!"));
-        clearMessages();
-      } 
 
-      if (strcmp(received_topic, topic_relay_open_car_set) == 0) {
-          mqttClient.publish(topic_relay_open_car_response, "1");
-          mqttClient.publish(topic_motor_running, "2"); 
+      if (strcmp(received_topic, topic_relay_open_pulse) == 0) {
           digitalWrite(pin_relay_open_car, HIGH);
           timer_relays_off.start();
           timer_gate_is_moving.start();
