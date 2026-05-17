@@ -227,11 +227,11 @@ void setupIoPins() {
 
 int returnGatePosition() {    // 1=running, 2=closed, 3=opened, 4=unkown_position 5=auto_close
   if ( digitalRead(pin_motor_running) == 1 )
-      return 3;
-  else if ( digitalRead(pin_limiter_closed) == 1 )
       return 1;
-  else if ( digitalRead(pin_limiter_opened) == 1 )
+  else if ( digitalRead(pin_limiter_closed) == 0 && digitalRead(pin_limiter_opened) == 1 )
       return 2;
+  else if ( digitalRead(pin_limiter_closed) == 1 && digitalRead(pin_limiter_opened) == 0 )
+      return 3;
   else
       return 4;
 }
@@ -298,19 +298,6 @@ void clearMessages() {
 
 
 
-void makeOpenGatePulse() {
-  digitalWrite(pin_relay_open, HIGH);
-  timer_turn_relays_off.start();
-}
-
-
-
-void makeOpenGateAutomatic() {
-
-}
-
-
-
 void turnRelaysOff() {
   digitalWrite(pin_relay_open, LOW);
 }
@@ -323,6 +310,20 @@ Ticker timer_maintain_mqtt(maintainMQTT, 1000);                              // 
 Ticker timer_check_inputs(checkInputsForChanges, 100);                       // 0.1s
 Ticker timer_mqtt_periodic_report(MqttPeriodicReport, 300000);               // 5min
 Ticker timer_turn_relays_off(turnRelaysOff, 1000, 1);                        // 1s, repeated once
+
+
+
+void makeOpenGatePulse() {
+  digitalWrite(pin_relay_open, HIGH);
+  timer_turn_relays_off.start();
+}
+
+
+
+void makeOpenGateAutomatic() {
+
+}
+
 
 
 void setup() {
