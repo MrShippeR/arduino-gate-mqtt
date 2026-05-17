@@ -135,10 +135,7 @@ void reconnectMQTT() {
     Serial.print(F("MQTT cnctd to srv "));
     Serial.println(mqtt_server);
 
-    MqttPeriodicReport();
-    if ( millis() < 10000 )
-      mqttClient.publish(topic_gate_position, returnGatePosition());
-    
+    MqttPeriodicReport();    
 
     mqttClient.subscribe(topic_relay_open_pulse);
     mqttClient.subscribe(topic_relay_open_automatic);
@@ -152,6 +149,7 @@ void reconnectMQTT() {
 
 void MqttPeriodicReport() {
   mqttClient.publish(topic_connect_status, "online");
+  mqttClient.publish(topic_gate_position, returnGatePosition());
 }
 
 
@@ -320,7 +318,7 @@ void makeOpenGatePulse() {
 
 
 
-void makeOpenGateAutomatic() {
+void makeCloseGateAutomatic() {
 
 }
 
