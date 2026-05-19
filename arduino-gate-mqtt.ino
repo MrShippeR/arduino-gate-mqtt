@@ -26,17 +26,17 @@
 
 
 // MQTT topics
-const char* topic_connect_status                 = "g/connect";
-const char* topic_relay_open_pulse               = "g/r/o";
-const char* topic_relay_open_automatic           = "g/r/oat";
-const char* topic_photocell_outside              = "g/ph/out";
-const char* topic_photocell_inside               = "g/ph/in";
+const char* topic_connect_status                 = "g/c";
+const char* topic_relay_open_pulse               = "g/o";
+const char* topic_relay_open_automatic           = "g/oat";
+const char* topic_photocell_outside              = "g/pho";
+const char* topic_photocell_inside               = "g/phi";
 const char* topic_induction_loop                 = "g/ind";
 const char* topic_input_open_pulse               = "g/i/o";
 const char* topic_input_open_automatic           = "g/i/oat";
-const char* topic_mailbox                        = "d/mail";
-const char* topic_home_ring                      = "d/ring";
-const char* topic_gate_position                  = "g/pos";
+const char* topic_mailbox                        = "d/m";
+const char* topic_home_ring                      = "d/r";
+const char* topic_gate_position                  = "g/p";
 
 
 // values for your network.
@@ -319,7 +319,7 @@ void makeOpenGatePulse() {
 
 
 void makeCloseGateAutomatic() {
-
+  sleep(1);
 }
 
 
