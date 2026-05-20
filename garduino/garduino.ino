@@ -70,8 +70,8 @@ MQTTClient mqttClient;
 // Global constants
 const unsigned long period_mqtt_msg = 30000; // 30s
 const unsigned long period_relay_pulse = 1000; // 1s
-const unsigned long period_max_waiting_autoclose = 600000; // 10min
-const unsigned long period_delay_autoclose = 2000; // 2s
+const unsigned long period_max_waiting_autoclose = 600000; // 10min 600000
+const unsigned long period_delay_autoclose = 3000; // 3s
 const unsigned long period_scan_inputs = 250; // ms
 const char* gate_positions_texts[] = {
                                       "v pohybu",
@@ -101,12 +101,12 @@ int last_input_open_automatic;
 
 
 void connectMqtt() {
-  Serial.print(F("connecting MQTT"));
+  Serial.print(F("MQTT connect"));
   while (!mqttClient.connect(mqtt_name, mqtt_name, mqtt_password)) {
     Serial.print(F("."));
     delay(1000);
   }
-  Serial.print(F("\nconnected to "));
+  Serial.print(F("ed to "));
   Serial.println(mqtt_server);
 
   mqttClient.subscribe(topic_relay_open_pulse);
@@ -142,7 +142,7 @@ byte returnGatePosition() {    // returns index to parse word in variable gatePo
       return 2;
   else if ( digitalRead(pin_limiter_closed) == 1 && digitalRead(pin_limiter_opened) == 0 && autoclose_activated == 1 )
       return 3;
-  else if ( digitalRead(pin_limiter_closed) == 0 && digitalRead(pin_limiter_opened) == 0 && digitalRead(pin_motor_running) == 0 )
+  else if ( digitalRead(pin_limiter_closed) == 1 && digitalRead(pin_limiter_opened) == 1 && digitalRead(pin_motor_running) == 0 )
       return 4;
   else
       return 5;
@@ -166,12 +166,17 @@ void makeOpenGateAutomatic() {
     return;
   }
 
-  if (digitalRead(pin_limiter_closed) == 0)
+  if (index_gate_position > 3) {
+    Serial.println(F("Not accepted!"));
+    return;
+  }
+
+  if (digitalRead(pin_limiter_closed) == 0 || autoclose_planned_close_signal == 1)
     makeOpenGatePulse();
 
   autoclose_activated = 1;
   timing_for_cancel_autoclose = millis();
-  timing_delay_autoclose = 4294967295;  // maximum of unsigned long type
+  //timing_delay_autoclose = 0;  // maximum of unsigned long type
   Serial.println(F("Waiting max 10min for vehicle to pass thru."));
 }
 
@@ -241,7 +246,7 @@ void setup() {
   delay(3000);
   
   Serial.begin(9600);
-  Serial.print(F("garduino starting with IP "));
+  Serial.print(F("Garduino starting with IP "));
   Ethernet.begin(mac, ip);
   Serial.println(Ethernet.localIP());
   delay(500);
@@ -279,7 +284,7 @@ void loop() {
   }
 
   if ( (millis() - timing_for_cancel_autoclose > period_max_waiting_autoclose) && autoclose_activated == 1 ) {
-    autoclose_activated = 0;  // doplnit někam zrušení řídící proměnné po průjezdu v čase
+    autoclose_activated = 0;  
     autoclose_planned_close_signal = 0;
     Serial.println(F("Autoclose canceled."));
     index_gate_position = returnGatePosition();
@@ -287,10 +292,12 @@ void loop() {
   }
 
   if ( (millis() - timing_delay_autoclose > period_delay_autoclose) && autoclose_activated == 1 && autoclose_planned_close_signal == 1 ) {
+    Serial.println(F("Waiting for clear way."));
     if ( digitalRead(pin_induction_loop) == 0 && digitalRead(pin_photocell_outside) == 0 && digitalRead(pin_photocell_inside) == 0 ) {
+      Serial.println(F("Autoclose started."));
       autoclose_activated = 0;
-      autoclose_planned_close_signal = 0;
       makeOpenGatePulse();
+      autoclose_planned_close_signal = 0;
     }
   }
 
@@ -316,12 +323,16 @@ void loop() {
 
   // autoclose logic
   if ( autoclose_activated == 1 && digitalRead(pin_induction_loop) == 1 && autoclose_planned_close_signal == 0 ) {
+    autoclose_activated = 0;
     autoclose_planned_close_signal = 1;
     Serial.println(F("Closing behind vehicle."));
   }
     
-  if ( autoclose_activated == 1 && digitalRead(pin_induction_loop) == 0 && autoclose_planned_close_signal == 1 ) 
+  if ( autoclose_activated == 0 && digitalRead(pin_induction_loop) == 0 && autoclose_planned_close_signal == 1 ) {
+    autoclose_activated = 1;
     timing_delay_autoclose = millis();
+    Serial.println(F("delay started"));
+  }
     
   
   
