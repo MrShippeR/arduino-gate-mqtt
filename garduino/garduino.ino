@@ -112,11 +112,11 @@ void connectMqtt() {
   mqttClient.setKeepAlive(30);
   mqttClient.setTimeout(40);
 
-  int repeats = 30;
-  while (!mqttClient.connect(mqtt_name, mqtt_name, mqtt_password) || repeats <= 0) {
+  int repeats = 10;
+  while (!mqttClient.connect(mqtt_name, mqtt_name, mqtt_password) && repeats > 0) {
     Serial.print(F("."));
     repeats = repeats - 1;
-    delay(1000);
+    delay(2000);
   }
 
   if (mqttClient.connected()){
@@ -264,7 +264,7 @@ void setup() {
   delay(3000);
   
   Serial.begin(9600);
-  Serial.print(F("Garduino starting with IP "));
+  Serial.print(F("'\nGarduino starting with IP "));
   Ethernet.begin(mac);
   Serial.println(Ethernet.localIP());
   delay(500);
