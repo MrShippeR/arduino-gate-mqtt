@@ -76,6 +76,7 @@ const unsigned long period_delay_autoclose = 3000; // 3s
 const unsigned long period_fast_scan_inputs = 250; // ms
 const unsigned long period_slow_scan_inputs = 1100; // 1,1s
 const unsigned long period_message_clear_way = 2000; // 2s
+const unsigned long period_mqtt_reconnected = 3000; // 3s
 const char* gate_positions_texts[] = {
                                       "v pohybu",
                                       "zavreno",
@@ -100,11 +101,13 @@ unsigned long timing_fast_scan_inputs = 0;
 unsigned long timing_slow_scan_inputs = 0;
 unsigned long timing_message_clear_way = 0;
 bool setting_loop_autoopen;
+unsigned long timing_mqtt_reconnected = 0;
 
 // Variables to memorize last states
 int last_sensor_mailbox;
 int last_home_ring;
 int last_input_open_automatic;
+int last_induction_loop;
 
 
 
@@ -127,6 +130,7 @@ void connectMqtt() {
   }
 
   if (mqttClient.connected()){
+    timing_mqtt_reconnected = millis();
     Serial.print(F("ed to "));
     Serial.println(mqtt_server);
 
@@ -220,6 +224,17 @@ void fastScanInputs() {
     index_gate_position = returnGatePosition();
     mqttClient.publish(topic_gate_position, gate_positions_texts[index_gate_position]);
   } 
+
+  if (digitalRead(pin_induction_loop) != last_induction_loop) {
+    last_induction_loop = digitalRead(pin_induction_loop);
+    Serial.print(F("Ind"));
+    Serial.print(text_changed_state_to);
+    Serial.println(last_induction_loop);
+
+    if (setting_loop_autoopen == 1 && digitalRead(pin_limiter_closed) == 0 && last_induction_loop == 1 && autoclose_activated == 0)
+      makeOpenGateAutomatic();
+    
+  }
 }
 
 
@@ -272,6 +287,7 @@ void setup() {
   last_home_ring = digitalRead(pin_home_ring);
   index_gate_position = returnGatePosition();
   last_input_open_automatic = digitalRead(pin_input_open_automatic);
+  last_induction_loop = digitalRead(pin_induction_loop);
   delay(3000);
   
   Serial.begin(9600);
@@ -282,7 +298,6 @@ void setup() {
   connectMqtt();
 
   setting_loop_autoopen = EEPROM.read(0);
-  mqttClient.publish(topic_setting_loop_autoopen_info, setting_loop_autoopen ? "1" : "0");
 }
 
 
@@ -300,6 +315,7 @@ void loop() {
     mqttClient.publish(topic_connect_status, "online");
     index_gate_position = returnGatePosition();
     mqttClient.publish(topic_gate_position, gate_positions_texts[index_gate_position]);
+    mqttClient.publish(topic_setting_loop_autoopen_info, setting_loop_autoopen ? "1" : "0");
   }
 
   if ( millis() - timing_fast_scan_inputs > period_fast_scan_inputs )
@@ -335,6 +351,9 @@ void loop() {
   }
 
   // processing of MQTT tasks
+  if ( millis() - timing_mqtt_reconnected < period_mqtt_reconnected )
+    clearMessages();    // drop false-positive commands after reconnect
+  
   if (received_message[0] != '\0') {
       Serial.print(F("Incoming MQTT: "));
       Serial.print(received_topic);
