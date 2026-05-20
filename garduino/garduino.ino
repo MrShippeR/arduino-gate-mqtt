@@ -102,15 +102,33 @@ int last_input_open_automatic;
 
 void connectMqtt() {
   Serial.print(F("MQTT connect"));
-  while (!mqttClient.connect(mqtt_name, mqtt_name, mqtt_password)) {
+
+  mqttClient.disconnect();
+  Ethernet.maintain();
+
+  mqttClient.begin(mqtt_server, ethClient);
+  mqttClient.onMessage(messageReceived);
+  mqttClient.setWill(topic_connect_status, "offline", true, 0);  // retained, QoS
+  mqttClient.setKeepAlive(30);
+  mqttClient.setTimeout(40);
+
+  int repeats = 30;
+  while (!mqttClient.connect(mqtt_name, mqtt_name, mqtt_password) || repeats <= 0) {
     Serial.print(F("."));
+    repeats = repeats - 1;
     delay(1000);
   }
-  Serial.print(F("ed to "));
-  Serial.println(mqtt_server);
 
-  mqttClient.subscribe(topic_relay_open_pulse);
-  mqttClient.subscribe(topic_relay_open_automatic);
+  if (mqttClient.connected()){
+    Serial.print(F("ed to "));
+    Serial.println(mqtt_server);
+
+    mqttClient.subscribe(topic_relay_open_pulse);
+    mqttClient.subscribe(topic_relay_open_automatic);
+  }
+  else
+    Serial.println(F("MQTT didn't connect!"));
+
 }
 
 
@@ -247,13 +265,9 @@ void setup() {
   
   Serial.begin(9600);
   Serial.print(F("Garduino starting with IP "));
-  Ethernet.begin(mac, ip);
+  Ethernet.begin(mac);
   Serial.println(Ethernet.localIP());
   delay(500);
-  mqttClient.begin(mqtt_server, ethClient);
-  mqttClient.onMessage(messageReceived);
-  mqttClient.setWill(topic_connect_status, "offline", true, 0);  // retained, QoS
-
   connectMqtt();
 }
 
