@@ -59,6 +59,7 @@ const char* topic_connect_status                 = "g/c";
 const char* topic_gate_position                  = "g/p";
 const char* topic_relay_open_pulse               = "g/o";
 const char* topic_relay_open_automatic           = "g/oat";
+const char* topic_input_open_automatic           = "g/i/oat";
 const char* topic_mailbox                        = "d/m";
 const char* topic_home_ring                      = "d/r";
 
@@ -71,6 +72,7 @@ const unsigned long period_mqtt_msg = 30000; // 30s
 const unsigned long period_relay_pulse = 1000; // 1s
 const unsigned long period_max_waiting_autoclose = 600000; // 10min
 const unsigned long period_delay_autoclose = 2000; // 2s
+const unsigned long period_scan_inputs = 250; // ms
 const char* gate_positions_texts[] = {
                                       "v pohybu",
                                       "zavreno",
@@ -79,6 +81,7 @@ const char* gate_positions_texts[] = {
                                       "mezipoloha",
                                       "nedefinovano"
 };
+const char* text_changed_state_to = " changed state to ";
 
 // Global variables
 byte index_gate_position = 5;
@@ -89,12 +92,12 @@ unsigned long timing_for_cancel_autoclose = 0;
 bool autoclose_activated = 0;
 bool autoclose_planned_close_signal = 0;
 unsigned long timing_delay_autoclose = 0;
+unsigned long timing_scan_inputs_for_change = 0;
 
 // Variables to memorize last states
 int last_sensor_mailbox;
 int last_home_ring;
-int last_gate_position;
-int input_state;
+int last_input_open_automatic;
 
 
 void connectMqtt() {
@@ -163,7 +166,9 @@ void makeOpenGateAutomatic() {
     return;
   }
 
-  makeOpenGatePulse();
+  if (digitalRead(pin_limiter_closed) == 0)
+    makeOpenGatePulse();
+
   autoclose_activated = 1;
   timing_for_cancel_autoclose = millis();
   timing_delay_autoclose = 4294967295;  // maximum of unsigned long type
@@ -173,38 +178,34 @@ void makeOpenGateAutomatic() {
 
 
 void checkInputsForChanges() {
-  const int key_count = 3;    // number of elements in array
+  if (digitalRead(pin_sensor_mailbox) != last_sensor_mailbox ) {
+    last_sensor_mailbox = digitalRead(pin_sensor_mailbox);
+    Serial.print(topic_mailbox);
+    Serial.print(text_changed_state_to);
+    Serial.println(last_sensor_mailbox);
+    mqttClient.publish (topic_mailbox, last_sensor_mailbox);
+  }
 
-  const int input_pins[key_count]    = {
-                                        pin_sensor_mailbox, 
-                                        pin_home_ring,
-                                        100
-                                       };
-  int* last_inputs[key_count]        = {
-                                        &last_sensor_mailbox,
-                                        &last_home_ring,
-                                        &last_gate_position
-                                       };
-  const char* mqtt_topics[key_count] = {
-                                        topic_mailbox, 
-                                        topic_home_ring,
-                                        topic_gate_position
-                                       };
+  if (digitalRead(pin_home_ring) != last_home_ring ) {
+    last_home_ring = digitalRead(pin_home_ring);
+    Serial.print(topic_home_ring);
+    Serial.print(text_changed_state_to);
+    Serial.println(last_home_ring);
+    mqttClient.publish (topic_home_ring, last_home_ring);
+  }
 
-  for (int i = 0; i < key_count; i++) {
-    if ( i == key_count - 1 )
-      input_state = returnGatePosition();
-    else
-      input_state = digitalRead ( input_pins[i] );
-    
-    if ( input_state != *last_inputs[i] ) {
-      *last_inputs[i] = input_state;
-      mqttClient.publish (mqtt_topics[i], input_state);
+  if (returnGatePosition() != index_gate_position ) {
+    index_gate_position = returnGatePosition();
+    mqttClient.publish(topic_gate_position, gate_positions_texts[index_gate_position]);
+  } 
 
-      Serial.print( mqtt_topics[i] );
-      Serial.print(F(" changed state to: "));
-      Serial.println( input_state );
-    }
+  if (digitalRead(pin_input_open_automatic) != last_input_open_automatic) {
+    last_input_open_automatic = digitalRead(pin_input_open_automatic);
+    Serial.print(topic_input_open_automatic);
+    Serial.print(text_changed_state_to);
+    Serial.println(last_input_open_automatic);
+    mqttClient.publish (topic_input_open_automatic, last_input_open_automatic);
+    makeOpenGateAutomatic();
   }
 }
 
@@ -233,6 +234,10 @@ void setupIoPins() {
 
 void setup() {
   setupIoPins();
+  last_sensor_mailbox = digitalRead(pin_sensor_mailbox);
+  last_home_ring = digitalRead(pin_home_ring);
+  index_gate_position = returnGatePosition();
+  last_input_open_automatic = digitalRead(pin_input_open_automatic);
   delay(3000);
   
   Serial.begin(9600);
@@ -263,6 +268,10 @@ void loop() {
     index_gate_position = returnGatePosition();
     mqttClient.publish(topic_gate_position, gate_positions_texts[index_gate_position]);
   }
+
+  if ( millis() - timing_scan_inputs_for_change > period_scan_inputs )
+    checkInputsForChanges();
+  
 
   if ( (millis() - timing_for_relay_pulse > period_relay_pulse) && relay_open_active == 1 ) {
     relay_open_active = 0;
