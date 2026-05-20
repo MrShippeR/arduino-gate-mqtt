@@ -66,9 +66,35 @@ const char* topic_home_ring                      = "d/r";
 EthernetClient ethClient;
 MQTTClient mqttClient;
 
-// Global variables
-unsigned long lastMillis = 0;
+// Global constants
+const unsigned long period_mqtt_msg = 30000; // 30s
+const unsigned long period_relay_pulse = 1000; // 1s
+const unsigned long period_max_waiting_autoclose = 600000; // 10min
+const unsigned long period_delay_autoclose = 2000; // 2s
+const char* gate_positions_texts[] = {
+                                      "v pohybu",
+                                      "zavreno",
+                                      "otevreno",
+                                      "otevreno pro prujezd",
+                                      "mezipoloha",
+                                      "nedefinovano"
+};
 
+// Global variables
+byte index_gate_position = 5;
+unsigned long timing_for_periodic_mqtt_msg = 0;
+unsigned long timing_for_relay_pulse = 0;
+bool relay_open_active = 0;
+unsigned long timing_for_cancel_autoclose = 0;
+bool autoclose_activated = 0;
+bool autoclose_planned_close_signal = 0;
+unsigned long timing_delay_autoclose = 0;
+
+// Variables to memorize last states
+int last_sensor_mailbox;
+int last_home_ring;
+int last_gate_position;
+int input_state;
 
 
 void connectMqtt() {
@@ -82,36 +108,146 @@ void connectMqtt() {
 
   mqttClient.subscribe(topic_relay_open_pulse);
   mqttClient.subscribe(topic_relay_open_automatic);
-  mqttClient.publish(topic_connect_status, "online");
 }
 
 
 
 void messageReceived(String &topic, String &payload) {
-  Serial.println("incoming: " + topic + " - " + payload);
-
   if (payload.length() >= MAX_PAYLOAD_LEN) {
     Serial.println(F("dropped MQTT payload!"));
     return;
   }
-
   topic.toCharArray(received_topic, MAX_TOPIC_LEN);
   payload.toCharArray(received_message, MAX_PAYLOAD_LEN);
 }
 
+
+
+void clearMessages() {
+  received_topic[0] = '\0';
+  received_message[0] = '\0';
+} 
+
+
+
+byte returnGatePosition() {    // returns index to parse word in variable gatePosition[]
+  if ( digitalRead(pin_motor_running) == 1 )
+      return 0;
+  else if ( digitalRead(pin_limiter_closed) == 0 && digitalRead(pin_limiter_opened) == 1 )
+      return 1;
+  else if ( digitalRead(pin_limiter_closed) == 1 && digitalRead(pin_limiter_opened) == 0 && autoclose_activated == 0 )
+      return 2;
+  else if ( digitalRead(pin_limiter_closed) == 1 && digitalRead(pin_limiter_opened) == 0 && autoclose_activated == 1 )
+      return 3;
+  else if ( digitalRead(pin_limiter_closed) == 0 && digitalRead(pin_limiter_opened) == 0 && digitalRead(pin_motor_running) == 0 )
+      return 4;
+  else
+      return 5;
+}
+
+
+
+void makeOpenGatePulse() {
+  digitalWrite(pin_relay_open, HIGH);
+  relay_open_active = 1;
+  timing_for_relay_pulse = millis();
+}
+
+
+
+void makeOpenGateAutomatic() {
+  if ( autoclose_activated == 1 ) {
+    Serial.println(F("Canceling autoclose."));
+    autoclose_activated = 0;
+    autoclose_planned_close_signal = 0;
+    return;
+  }
+
+  makeOpenGatePulse();
+  autoclose_activated = 1;
+  timing_for_cancel_autoclose = millis();
+  timing_delay_autoclose = 4294967295;  // maximum of unsigned long type
+  Serial.println(F("Waiting max 10min for vehicle to pass thru."));
+}
+
+
+
+void checkInputsForChanges() {
+  const int key_count = 3;    // number of elements in array
+
+  const int input_pins[key_count]    = {
+                                        pin_sensor_mailbox, 
+                                        pin_home_ring,
+                                        100
+                                       };
+  int* last_inputs[key_count]        = {
+                                        &last_sensor_mailbox,
+                                        &last_home_ring,
+                                        &last_gate_position
+                                       };
+  const char* mqtt_topics[key_count] = {
+                                        topic_mailbox, 
+                                        topic_home_ring,
+                                        topic_gate_position
+                                       };
+
+  for (int i = 0; i < key_count; i++) {
+    if ( i == key_count - 1 )
+      input_state = returnGatePosition();
+    else
+      input_state = digitalRead ( input_pins[i] );
+    
+    if ( input_state != *last_inputs[i] ) {
+      *last_inputs[i] = input_state;
+      mqttClient.publish (mqtt_topics[i], input_state);
+
+      Serial.print( mqtt_topics[i] );
+      Serial.print(F(" changed state to: "));
+      Serial.println( input_state );
+    }
+  }
+}
+
+
+
+void setupIoPins() {
+  pinMode(pin_motor_running,  INPUT);
+  pinMode(pin_relay_open, OUTPUT);
+  digitalWrite(pin_relay_open, LOW);
+  
+  pinMode(pin_limiter_closed, INPUT);
+  pinMode(pin_limiter_opened, INPUT);
+
+  pinMode(pin_photocell_outside, INPUT);
+  pinMode(pin_photocell_inside,  INPUT);
+  pinMode(pin_induction_loop,    INPUT);
+
+  pinMode(pin_input_open_pulse,     INPUT);
+  pinMode(pin_input_open_automatic, INPUT);
+
+  pinMode(pin_sensor_mailbox, INPUT_PULLUP);
+  pinMode(pin_home_ring, INPUT);
+}
+
+
+
 void setup() {
+  setupIoPins();
   delay(3000);
+  
   Serial.begin(9600);
   Serial.print(F("garduino starting with IP "));
   Ethernet.begin(mac, ip);
   Serial.println(Ethernet.localIP());
-
+  delay(500);
   mqttClient.begin(mqtt_server, ethClient);
   mqttClient.onMessage(messageReceived);
   mqttClient.setWill(topic_connect_status, "offline", true, 0);  // retained, QoS
 
   connectMqtt();
 }
+
+
 
 void loop() {
   mqttClient.loop();
@@ -120,9 +256,71 @@ void loop() {
     connectMqtt();
   }
 
-  // publish a message roughly every 10 second.
-  if (millis() - lastMillis > 10000) {
-    lastMillis = millis();
-    mqttClient.publish("/hello", "world");
+  // timers
+  if ( millis() - timing_for_periodic_mqtt_msg > period_mqtt_msg ) {
+    timing_for_periodic_mqtt_msg = millis();
+    mqttClient.publish(topic_connect_status, "online");
+    index_gate_position = returnGatePosition();
+    mqttClient.publish(topic_gate_position, gate_positions_texts[index_gate_position]);
   }
+
+  if ( (millis() - timing_for_relay_pulse > period_relay_pulse) && relay_open_active == 1 ) {
+    relay_open_active = 0;
+    digitalWrite(pin_relay_open, LOW);
+  }
+
+  if ( (millis() - timing_for_cancel_autoclose > period_max_waiting_autoclose) && autoclose_activated == 1 ) {
+    autoclose_activated = 0;  // doplnit někam zrušení řídící proměnné po průjezdu v čase
+    autoclose_planned_close_signal = 0;
+    Serial.println(F("Autoclose canceled."));
+    index_gate_position = returnGatePosition();
+    mqttClient.publish(topic_gate_position, gate_positions_texts[index_gate_position]);
+  }
+
+  if ( (millis() - timing_delay_autoclose > period_delay_autoclose) && autoclose_activated == 1 && autoclose_planned_close_signal == 1 ) {
+    if ( digitalRead(pin_induction_loop) == 0 && digitalRead(pin_photocell_outside) == 0 && digitalRead(pin_photocell_inside) == 0 ) {
+      autoclose_activated = 0;
+      autoclose_planned_close_signal = 0;
+      makeOpenGatePulse();
+    }
+  }
+
+  // processing of MQTT tasks
+  if (received_message[0] != '\0') {
+      Serial.print(F("Incoming MQTT: "));
+      Serial.print(received_topic);
+      Serial.print(F(": "));
+      Serial.println(received_message);
+
+
+      if (strcmp(received_topic, topic_relay_open_pulse) == 0) {
+        makeOpenGatePulse();
+      }
+
+      if (strcmp(received_topic, topic_relay_open_automatic) == 0) {
+        makeOpenGateAutomatic();
+      }
+
+      clearMessages();
+  }
+
+
+  // autoclose logic
+  if ( autoclose_activated == 1 && digitalRead(pin_induction_loop) == 1 && autoclose_planned_close_signal == 0 ) {
+    autoclose_planned_close_signal = 1;
+    Serial.println(F("Closing behind vehicle."));
+  }
+    
+  if ( autoclose_activated == 1 && digitalRead(pin_induction_loop) == 0 && autoclose_planned_close_signal == 1 ) 
+    timing_delay_autoclose = millis();
+    
+  
+  
+
+
+
+
+
+
+
 }
