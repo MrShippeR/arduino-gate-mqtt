@@ -74,7 +74,7 @@ const unsigned long period_relay_pulse = 1000; // 1s
 const unsigned long period_max_waiting_autoclose = 600000; // 10min 600000
 const unsigned long period_delay_autoclose = 3000; // 3s
 const unsigned long period_fast_scan_inputs = 250; // ms
-const unsigned long period_slow_scan_inputs = 1100; // 1,1s
+const unsigned long period_slow_scan_inputs = 3000; // 2s
 const unsigned long period_message_clear_way = 2000; // 2s
 const unsigned long period_mqtt_reconnected = 3000; // 3s
 const char* gate_positions_texts[] = {
@@ -261,22 +261,22 @@ void slowScanInputs() {
 
 
 void setupIoPins() {
-  pinMode(pin_motor_running,  INPUT);
+  pinMode(pin_motor_running,  INPUT_PULLUP);
   pinMode(pin_relay_open, OUTPUT);
   digitalWrite(pin_relay_open, LOW);
   
-  pinMode(pin_limiter_closed, INPUT);
-  pinMode(pin_limiter_opened, INPUT);
+  pinMode(pin_limiter_closed, INPUT_PULLUP);
+  pinMode(pin_limiter_opened, INPUT_PULLUP);
 
-  pinMode(pin_photocell_outside, INPUT);
-  pinMode(pin_photocell_inside,  INPUT);
-  pinMode(pin_induction_loop,    INPUT);
+  pinMode(pin_photocell_outside, INPUT_PULLUP);
+  pinMode(pin_photocell_inside,  INPUT_PULLUP);
+  pinMode(pin_induction_loop,    INPUT_PULLUP);
 
-  pinMode(pin_input_open_pulse,     INPUT);
-  pinMode(pin_input_open_automatic, INPUT);
+  pinMode(pin_input_open_pulse,     INPUT_PULLUP);
+  pinMode(pin_input_open_automatic, INPUT_PULLUP);
 
   pinMode(pin_sensor_mailbox, INPUT_PULLUP);
-  pinMode(pin_home_ring, INPUT);
+  pinMode(pin_home_ring, INPUT_PULLUP);
 }
 
 
