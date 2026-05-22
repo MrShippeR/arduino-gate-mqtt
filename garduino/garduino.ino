@@ -72,9 +72,8 @@ MQTTClient mqttClient;
 const unsigned long period_mqtt_msg = 30000; // 30s
 const unsigned long period_relay_pulse = 1000; // 1s
 const unsigned long period_max_waiting_autoclose = 600000; // 10min 600000
-const unsigned long period_delay_autoclose = 3000; // 3s
-const unsigned long period_fast_scan_inputs = 250; // ms
-const unsigned long period_slow_scan_inputs = 3000; // 2s
+const unsigned long period_delay_autoclose = 5000; // 5s
+const unsigned long period_fast_scan_inputs = 150; // ms
 const unsigned long period_message_clear_way = 2000; // 2s
 const unsigned long period_mqtt_reconnected = 3000; // 3s
 const char* gate_positions_texts[] = {
@@ -96,9 +95,9 @@ bool relay_open_active = 0;
 unsigned long timing_for_cancel_autoclose = 0;
 bool autoclose_activated = 0;
 bool autoclose_planned_close_signal = 0;
+bool autoclose_delay_active = 0;
 unsigned long timing_delay_autoclose = 0;
 unsigned long timing_fast_scan_inputs = 0;
-unsigned long timing_slow_scan_inputs = 0;
 unsigned long timing_message_clear_way = 0;
 bool setting_loop_autoopen;
 unsigned long timing_mqtt_reconnected = 0;
@@ -212,14 +211,6 @@ void makeOpenGateAutomatic() {
 
 
 void fastScanInputs() {
-  if (digitalRead(pin_home_ring) != last_home_ring ) {
-    last_home_ring = digitalRead(pin_home_ring);
-    Serial.print(topic_home_ring);
-    Serial.print(text_changed_state_to);
-    Serial.println(last_home_ring);
-    mqttClient.publish (topic_home_ring, last_home_ring);
-  }
-
   if (returnGatePosition() != index_gate_position ) {
     index_gate_position = returnGatePosition();
     mqttClient.publish(topic_gate_position, gate_positions_texts[index_gate_position]);
@@ -231,21 +222,9 @@ void fastScanInputs() {
     Serial.print(text_changed_state_to);
     Serial.println(last_induction_loop);
 
-    if (setting_loop_autoopen == 1 && digitalRead(pin_limiter_closed) == 0 && last_induction_loop == 1 && autoclose_activated == 0)
+    if (setting_loop_autoopen == 1 && index_gate_position == 1 && last_induction_loop == 1 && autoclose_activated == 0 && relay_open_active == 0)
       makeOpenGateAutomatic();
     
-  }
-}
-
-
-
-void slowScanInputs() {
-  if (digitalRead(pin_sensor_mailbox) != last_sensor_mailbox ) {
-    last_sensor_mailbox = digitalRead(pin_sensor_mailbox);
-    Serial.print(topic_mailbox);
-    Serial.print(text_changed_state_to);
-    Serial.println(last_sensor_mailbox);
-    mqttClient.publish (topic_mailbox, last_sensor_mailbox);
   }
 
   if (digitalRead(pin_input_open_automatic) != last_input_open_automatic) {
@@ -254,7 +233,24 @@ void slowScanInputs() {
     Serial.print(text_changed_state_to);
     Serial.println(last_input_open_automatic);
     mqttClient.publish (topic_input_open_automatic, last_input_open_automatic);
-    makeOpenGateAutomatic();
+    if (last_input_open_automatic == 1)
+      makeOpenGateAutomatic();
+  }
+
+  if (digitalRead(pin_sensor_mailbox) != last_sensor_mailbox ) {
+    last_sensor_mailbox = digitalRead(pin_sensor_mailbox);
+    Serial.print(topic_mailbox);
+    Serial.print(text_changed_state_to);
+    Serial.println(last_sensor_mailbox);
+    mqttClient.publish (topic_mailbox, last_sensor_mailbox);
+  }
+
+  if (digitalRead(pin_home_ring) != last_home_ring ) {
+    last_home_ring = digitalRead(pin_home_ring);
+    Serial.print(topic_home_ring);
+    Serial.print(text_changed_state_to);
+    Serial.println(last_home_ring);
+    mqttClient.publish (topic_home_ring, last_home_ring);
   }
 }
 
@@ -320,9 +316,6 @@ void loop() {
 
   if ( millis() - timing_fast_scan_inputs > period_fast_scan_inputs )
     fastScanInputs();
-  
-  if ( millis() - timing_slow_scan_inputs > period_slow_scan_inputs )
-    slowScanInputs();
 
   if ( (millis() - timing_for_relay_pulse > period_relay_pulse) && relay_open_active == 1 ) {
     relay_open_active = 0;
@@ -332,12 +325,13 @@ void loop() {
   if ( (millis() - timing_for_cancel_autoclose > period_max_waiting_autoclose) && autoclose_activated == 1 ) {
     autoclose_activated = 0;  
     autoclose_planned_close_signal = 0;
+    autoclose_delay_active = 0;
     Serial.println(text_autoclose_canceled);
     index_gate_position = returnGatePosition();
     mqttClient.publish(topic_gate_position, gate_positions_texts[index_gate_position]);
   }
 
-  if ( (millis() - timing_delay_autoclose > period_delay_autoclose) && autoclose_activated == 1 && autoclose_planned_close_signal == 1 ) {
+  if ( (millis() - timing_delay_autoclose > period_delay_autoclose) && autoclose_activated == 1 && autoclose_planned_close_signal == 1 && autoclose_delay_active == 1) {
     
     if ( millis() - timing_message_clear_way > period_message_clear_way ) {
       timing_message_clear_way = millis();
@@ -345,8 +339,9 @@ void loop() {
     }
     if ( digitalRead(pin_induction_loop) == 0 && digitalRead(pin_photocell_outside) == 0 && digitalRead(pin_photocell_inside) == 0 ) {
       autoclose_activated = 0;
-      makeOpenGatePulse();
       autoclose_planned_close_signal = 0;
+      autoclose_delay_active = 0;
+      makeOpenGatePulse();
     }
   }
 
@@ -390,13 +385,14 @@ void loop() {
 
   // autoclose logic
   if ( autoclose_activated == 1 && digitalRead(pin_induction_loop) == 1 && autoclose_planned_close_signal == 0 ) {
-    autoclose_activated = 0;
+    // autoclose_activated = 0;
     autoclose_planned_close_signal = 1;
     Serial.println(F("Vehicle on loop."));
   }
     
-  if ( autoclose_activated == 0 && digitalRead(pin_induction_loop) == 0 && autoclose_planned_close_signal == 1 ) {
-    autoclose_activated = 1;
+  if ( autoclose_activated == 1 && digitalRead(pin_induction_loop) == 0 && autoclose_planned_close_signal == 1 && autoclose_delay_active == 0 && index_gate_position == 3 ) {
+    // autoclose_activated = 1;
+    autoclose_delay_active = 1;
     timing_delay_autoclose = millis();
     Serial.println(F("Delay started."));
   }
