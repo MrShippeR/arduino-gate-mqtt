@@ -28,9 +28,9 @@
 const int pin_sensor_mailbox = 2;
 const int pin_motor_running = 3;
 // pin 4 reserved for chip select of SD card.
-//const int pin_relay_1 = 5;    // unused
-const int pin_relay_open = 6;
-//const int pin_relay_3 = 7;    // unused
+const int pin_relay_open = 5;
+const int pin_led_red = 6;
+const int pin_led_green = 7;
 const int pin_limiter_closed = 9;
 const int pin_limiter_opened = 8;
 // pin 10 reserved for chip select of Ethernet W5100
@@ -64,6 +64,18 @@ const char* topic_setting_loop_autoopen_info     = "g/i/i";
 const char* topic_mailbox                        = "d/m";
 const char* topic_home_ring                      = "d/r";
 
+// Texts
+const char* text_changed_state_to = " changed state to ";
+const char* text_autoclose_canceled = "Autoclose canceled.";
+const char* gate_positions_texts[] = {
+                                      "v pohybu",
+                                      "zavreno",
+                                      "otevreno",
+                                      "otevreno pro prujezd",
+                                      "mezipoloha",
+                                      "nedefinovano"
+};
+
 // Defining classes
 EthernetClient ethClient;
 MQTTClient mqttClient;
@@ -76,16 +88,6 @@ const unsigned long period_delay_autoclose = 5000; // 5s
 const unsigned long period_fast_scan_inputs = 150; // ms
 const unsigned long period_message_clear_way = 2000; // 2s
 const unsigned long period_mqtt_reconnected = 3000; // 3s
-const char* gate_positions_texts[] = {
-                                      "v pohybu",
-                                      "zavreno",
-                                      "otevreno",
-                                      "otevreno pro prujezd",
-                                      "mezipoloha",
-                                      "nedefinovano"
-};
-const char* text_changed_state_to = " changed state to ";
-const char* text_autoclose_canceled = "Autoclose canceled.";
 
 // Global variables
 byte index_gate_position = 5;
@@ -101,6 +103,12 @@ unsigned long timing_fast_scan_inputs = 0;
 unsigned long timing_message_clear_way = 0;
 bool setting_loop_autoopen;
 unsigned long timing_mqtt_reconnected = 0;
+unsigned long timing_led_blinking = 0;
+bool led_red_blinking_activated = 0;
+int led_red_state_if_blinking = LOW;
+bool led_green_blinking_activated = 0;
+int led_green_state_if_blinking = LOW;
+
 
 // Variables to memorize last states
 int last_sensor_mailbox;
@@ -179,6 +187,62 @@ byte returnGatePosition() {    // returns index to parse word in variable gatePo
 
 
 
+void setLedForPositions() {
+  led_red_blinking_activated = 0;
+  led_green_blinking_activated = 0;
+
+  switch (index_gate_position) {
+      case 0:
+        // blue
+        digitalWrite(pin_led_green, LOW);
+        digitalWrite(pin_led_red, LOW);
+        // digitalWrite(pin_led_blue, HIGH); based on HW relay from motor_running
+        break;
+      case 1:
+        // green zavřeno
+        digitalWrite(pin_led_green, HIGH);
+        digitalWrite(pin_led_red, LOW);
+        // digitalWrite(pin_led_blue, LOW);
+        break;
+      case 2:
+        // yellow otevřeno
+        digitalWrite(pin_led_green, HIGH);
+        digitalWrite(pin_led_red, HIGH);
+        // digitalWrite(pin_led_blue, LOW);
+        break;
+      case 3:
+        // yellow blinking otevřeno pro průjezd
+        digitalWrite(pin_led_green, HIGH);
+        digitalWrite(pin_led_red, HIGH);
+        // digitalWrite(pin_led_blue, LOW);
+
+        timing_led_blinking = millis();
+        led_green_blinking_activated = 1;
+        led_red_blinking_activated = 1;
+        
+        led_green_state_if_blinking = HIGH;
+        led_red_state_if_blinking = HIGH;
+        break;
+      case 4:
+        // red mezipoloha
+        digitalWrite(pin_led_green, LOW);
+        digitalWrite(pin_led_red, HIGH);
+        // digitalWrite(pin_led_blue, LOW);
+        break;
+      case 5:
+        // red blinking nedefinováno
+        digitalWrite(pin_led_green, LOW);
+        digitalWrite(pin_led_red, HIGH);
+        // digitalWrite(pin_led_blue, LOW);
+
+        timing_led_blinking = millis();
+        led_red_blinking_activated = 1;
+        break;
+    }
+}
+
+
+
 void makeOpenGatePulse() {
   digitalWrite(pin_relay_open, HIGH);
   relay_open_active = 1;
@@ -213,6 +277,7 @@ void makeOpenGateAutomatic() {
 void fastScanInputs() {
   if (returnGatePosition() != index_gate_position ) {
     index_gate_position = returnGatePosition();
+    setLedForPositions();
     mqttClient.publish(topic_gate_position, gate_positions_texts[index_gate_position]);
   } 
 
@@ -258,8 +323,13 @@ void fastScanInputs() {
 
 void setupIoPins() {
   pinMode(pin_motor_running,  INPUT_PULLUP);
+
   pinMode(pin_relay_open, OUTPUT);
   digitalWrite(pin_relay_open, LOW);
+  pinMode(pin_led_red, OUTPUT);
+  digitalWrite(pin_led_red, LOW);
+  pinMode(pin_led_green, OUTPUT);
+  digitalWrite(pin_led_green, LOW);
   
   pinMode(pin_limiter_closed, INPUT_PULLUP);
   pinMode(pin_limiter_opened, INPUT_PULLUP);
@@ -282,6 +352,7 @@ void setup() {
   last_sensor_mailbox = digitalRead(pin_sensor_mailbox);
   last_home_ring = digitalRead(pin_home_ring);
   index_gate_position = returnGatePosition();
+  setLedForPositions();
   last_input_open_automatic = digitalRead(pin_input_open_automatic);
   last_induction_loop = digitalRead(pin_induction_loop);
   delay(3000);
@@ -322,12 +393,26 @@ void loop() {
     digitalWrite(pin_relay_open, LOW);
   }
 
+  if ( millis() - timing_led_blinking > period_relay_pulse ) {
+    if (led_green_blinking_activated == 1) {
+      timing_led_blinking = millis();
+      led_green_state_if_blinking = !led_green_state_if_blinking;
+      digitalWrite(pin_led_green, led_green_state_if_blinking);
+    }
+    if (led_red_blinking_activated == 1) {
+      timing_led_blinking = millis();
+      led_red_state_if_blinking = !led_red_state_if_blinking;
+      digitalWrite(pin_led_red, led_red_state_if_blinking);
+    }
+  }
+
   if ( (millis() - timing_for_cancel_autoclose > period_max_waiting_autoclose) && autoclose_activated == 1 ) {
     autoclose_activated = 0;  
     autoclose_planned_close_signal = 0;
     autoclose_delay_active = 0;
     Serial.println(text_autoclose_canceled);
     index_gate_position = returnGatePosition();
+    setLedForPositions();
     mqttClient.publish(topic_gate_position, gate_positions_texts[index_gate_position]);
   }
 
@@ -385,13 +470,11 @@ void loop() {
 
   // autoclose logic
   if ( autoclose_activated == 1 && digitalRead(pin_induction_loop) == 1 && autoclose_planned_close_signal == 0 ) {
-    // autoclose_activated = 0;
     autoclose_planned_close_signal = 1;
     Serial.println(F("Vehicle on loop."));
   }
-    
+
   if ( autoclose_activated == 1 && digitalRead(pin_induction_loop) == 0 && autoclose_planned_close_signal == 1 && autoclose_delay_active == 0 && index_gate_position == 3 ) {
-    // autoclose_activated = 1;
     autoclose_delay_active = 1;
     timing_delay_autoclose = millis();
     Serial.println(F("Delay started."));
