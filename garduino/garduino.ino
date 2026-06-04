@@ -27,7 +27,7 @@
 // HW pinout section
 const int pin_sensor_mailbox = 2;
 const int pin_motor_running = 3;
-// pin 4 reserved for chip select of SD card.
+const int pin_led_brightness = 4;   // conflict with chip select of SD card - do not use SD!
 const int pin_relay_open = 5;
 const int pin_led_red = 6;
 const int pin_led_green = 7;
@@ -48,21 +48,23 @@ const char* mqtt_name     = "garduino";
 const char* mqtt_password = "Drainpipe";
 
 // MQTT communication variables
-#define MAX_TOPIC_LEN 16
-#define MAX_PAYLOAD_LEN 7
+#define MAX_TOPIC_LEN 20
+#define MAX_PAYLOAD_LEN 8
 char received_topic[MAX_TOPIC_LEN];
 char received_message[MAX_PAYLOAD_LEN];
 
 // MQTT topics
-const char* topic_connect_status                 = "g/c";
-const char* topic_gate_position                  = "g/p";
+const char* topic_connect_status                 = "g/connect";
+const char* topic_gate_position                  = "g/position";
 const char* topic_relay_open_pulse               = "g/o";
 const char* topic_relay_open_automatic           = "g/oat";
 const char* topic_input_open_automatic           = "g/i/oat";
-const char* topic_setting_loop_autoopen_set      = "g/i/s";
-const char* topic_setting_loop_autoopen_info     = "g/i/i";
-const char* topic_mailbox                        = "d/m";
-const char* topic_home_ring                      = "d/r";
+const char* topic_setting_loop_autoopen_set      = "g/ind/s";
+const char* topic_setting_loop_autoopen_info     = "g/ind/i";
+const char* topic_brightness_set                 = "g/br/s";
+const char* topic_brightness_info                = "g/br/i";
+const char* topic_mailbox                        = "d/mail";
+const char* topic_home_ring                      = "d/ring";
 
 // Texts
 const char* text_changed_state_to = " changed state to ";
@@ -89,25 +91,28 @@ const unsigned long period_fast_scan_inputs = 150; // ms
 const unsigned long period_message_clear_way = 2000; // 2s
 const unsigned long period_mqtt_reconnected = 3000; // 3s
 
-// Global variables
-byte index_gate_position = 5;
+// Timers
 unsigned long timing_for_periodic_mqtt_msg = 0;
 unsigned long timing_for_relay_pulse = 0;
-bool relay_open_active = 0;
 unsigned long timing_for_cancel_autoclose = 0;
-bool autoclose_activated = 0;
-bool autoclose_planned_close_signal = 0;
-bool autoclose_delay_active = 0;
 unsigned long timing_delay_autoclose = 0;
 unsigned long timing_fast_scan_inputs = 0;
 unsigned long timing_message_clear_way = 0;
-bool setting_loop_autoopen;
 unsigned long timing_mqtt_reconnected = 0;
 unsigned long timing_led_blinking = 0;
+
+// Global variables
+byte index_gate_position = 5;
+bool relay_open_active = 0;
+bool autoclose_activated = 0;
+bool autoclose_planned_close_signal = 0;
+bool autoclose_delay_active = 0;
+bool setting_loop_autoopen;
 bool led_red_blinking_activated = 0;
 int led_red_state_if_blinking = LOW;
 bool led_green_blinking_activated = 0;
 int led_green_state_if_blinking = LOW;
+int led_brightness = 0;
 
 
 // Variables to memorize last states
@@ -144,6 +149,7 @@ void connectMqtt() {
     mqttClient.subscribe(topic_relay_open_pulse);
     mqttClient.subscribe(topic_relay_open_automatic);
     mqttClient.subscribe(topic_setting_loop_autoopen_set);
+    mqttClient.subscribe(topic_brightness_set);
   }
   else
     Serial.println(F("error"));
@@ -324,6 +330,8 @@ void fastScanInputs() {
 void setupIoPins() {
   pinMode(pin_motor_running,  INPUT_PULLUP);
 
+  pinMode(pin_led_brightness, OUTPUT);
+  digitalWrite(pin_led_brightness, LOW);
   pinMode(pin_relay_open, OUTPUT);
   digitalWrite(pin_relay_open, LOW);
   pinMode(pin_led_red, OUTPUT);
@@ -383,6 +391,7 @@ void loop() {
     index_gate_position = returnGatePosition();
     mqttClient.publish(topic_gate_position, gate_positions_texts[index_gate_position]);
     mqttClient.publish(topic_setting_loop_autoopen_info, setting_loop_autoopen ? "1" : "0");
+    mqttClient.publish(topic_brightness_info, led_brightness ? "1" : "0");
   }
 
   if ( millis() - timing_fast_scan_inputs > period_fast_scan_inputs )
@@ -448,6 +457,17 @@ void loop() {
       if (strcmp(received_topic, topic_relay_open_automatic) == 0) {
         makeOpenGateAutomatic();
       }
+
+      
+      if (strcmp(received_topic, topic_brightness_set) == 0) {
+        if (received_message[0] == '1')
+          led_brightness = HIGH;
+        else
+          led_brightness = LOW;
+
+        digitalWrite(pin_led_brightness, led_brightness);
+        mqttClient.publish(topic_brightness_info, led_brightness ? "1" : "0");
+      }      
 
       if (strcmp(received_topic, topic_setting_loop_autoopen_set) == 0) {
         if (received_message[0] == '1')
