@@ -24,9 +24,6 @@
 #include <MQTT.h>
 #include <EEPROM.h>
 
-#define _TASK_STATUS_REQUEST
-#include <TaskScheduler.h>
-
 
 // HW pinout section
 const int pin_sensor_mailbox = 2;
@@ -85,11 +82,7 @@ const char* gate_positions_texts[] = {
 // Defining classes
 EthernetClient ethClient;
 MQTTClient mqttClient;
-Scheduler runner;
 
-// timer functions declaration
-void relayOpenOn();
-void relayOpenOff();
 
 // Global constants
 const unsigned long period_mqtt_msg = 30000; // 30s
@@ -103,7 +96,6 @@ const unsigned long period_mqtt_reconnected = 3000; // 3s
 // Timers
 unsigned long timing_mqtt_msg = 0;
 unsigned long timing_relay_pulse = 0;
-Task timer_relay_make_pulse(1000, 1, &relayOpenOff, &runner, false, &relayOpenOn, NULL);    // 1s, repeat 1x, func, scheduler, task_enabled, onEnable, onDisable
 unsigned long timing_for_cancel_autoclose = 0;
 unsigned long timing_delay_autoclose = 0;
 unsigned long timing_scan_inputs = 0;
@@ -254,20 +246,10 @@ void setLedForPositions() {
 
 
 
-void relayOpenOn() {
-  digitalWrite(pin_relay_open, HIGH);
-}
-
-
-
-void relayOpenOff() {
-  digitalWrite(pin_relay_open, LOW);
-}
-
-
 void makeOpenGatePulse() {
   digitalWrite(pin_relay_open, HIGH);
   timing_relay_pulse = millis();
+  Serial.println(F("relay open ON"));
 }
 
 
@@ -299,6 +281,7 @@ void scanInputs() {
   if (returnGatePosition() != index_gate_position ) {
     index_gate_position = returnGatePosition();
     setLedForPositions();
+    Serial.println(gate_positions_texts[index_gate_position]);
     Serial.println(gate_positions_texts[index_gate_position]);
     mqttClient.publish(topic_gate_position, gate_positions_texts[index_gate_position]);
   } 
@@ -400,7 +383,6 @@ void loop() {
     connectMqtt();
   }
 
-  runner.execute();
 
   // autoclose logic
   if ( autoclose_activated == 1 && digitalRead(pin_induction_loop) == 1 && autoclose_planned_close_signal == 0 ) {
@@ -433,6 +415,7 @@ void loop() {
 
   if ( millis() - timing_relay_pulse > period_relay_pulse ) {
     digitalWrite(pin_relay_open, LOW);
+    Serial.println(F("relay open OFF"));
   }
 
   if ( millis() - timing_led_blinking > period_relay_pulse ) {
