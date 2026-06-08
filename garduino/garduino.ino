@@ -249,6 +249,7 @@ void setLedForPositions() {
 void makeOpenGatePulse() {
   digitalWrite(pin_relay_open, HIGH);
   timing_relay_pulse = millis();
+  relay_open_active = 1;
   Serial.println(F("relay open ON"));
 }
 
@@ -281,7 +282,6 @@ void scanInputs() {
   if (returnGatePosition() != index_gate_position ) {
     index_gate_position = returnGatePosition();
     setLedForPositions();
-    Serial.println(gate_positions_texts[index_gate_position]);
     Serial.println(gate_positions_texts[index_gate_position]);
     mqttClient.publish(topic_gate_position, gate_positions_texts[index_gate_position]);
   } 
@@ -383,20 +383,22 @@ void loop() {
     connectMqtt();
   }
 
-
   // autoclose logic
-  if ( autoclose_activated == 1 && digitalRead(pin_induction_loop) == 1 && autoclose_planned_close_signal == 0 ) {
-    autoclose_planned_close_signal = 1;
-    Serial.println(F("Vehicle on loop."));
-  }
+  if (index_gate_position == 3) {
 
-  if ( autoclose_activated == 1 && digitalRead(pin_induction_loop) == 0 && autoclose_planned_close_signal == 1 && autoclose_delay_active == 0 && index_gate_position == 3 ) {
-    autoclose_delay_active = 1;
-    timing_delay_autoclose = millis();
-    Serial.println(F("Delay started."));
-  }
+    
+    if ( autoclose_activated == 1 && digitalRead(pin_induction_loop) == 1 && autoclose_planned_close_signal == 0 ) {
+      autoclose_planned_close_signal = 1;
+      Serial.println(F("Vehicle on loop."));
+    }
 
+    if ( autoclose_activated == 1 && digitalRead(pin_induction_loop) == 0 && autoclose_planned_close_signal == 1 && autoclose_delay_active == 0 ) {
+      autoclose_delay_active = 1;
+      timing_delay_autoclose = millis();
+      Serial.println(F("Delay started."));
+    }
 
+}
 
   // timers
   if ( millis() - timing_scan_inputs > period_scan_inputs ) {
@@ -413,9 +415,10 @@ void loop() {
     mqttClient.publish(topic_brightness_info, led_brightness ? "1" : "0");
   }
 
-  if ( millis() - timing_relay_pulse > period_relay_pulse ) {
+  if ( (millis() - timing_relay_pulse > period_relay_pulse) && relay_open_active == 1 ) {
     digitalWrite(pin_relay_open, LOW);
     Serial.println(F("relay open OFF"));
+    relay_open_active = 0;
   }
 
   if ( millis() - timing_led_blinking > period_relay_pulse ) {
@@ -447,6 +450,7 @@ void loop() {
       autoclose_activated = 0;
       autoclose_planned_close_signal = 0;
       autoclose_delay_active = 0;
+      Serial.println(F("Way clear."));
       makeOpenGatePulse();
     }
   }
