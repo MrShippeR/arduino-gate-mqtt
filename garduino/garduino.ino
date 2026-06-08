@@ -14,6 +14,7 @@
 * https://www.home-assistant.io/integrations/sensor.mqtt/
 * https://www.home-assistant.io/integrations/switch.mqtt/
 * https://github.com/256dpi/arduino-mqtt lwmqtt
+* https://github.com/arkhipenko/TaskScheduler/tree/master TaskScheduler
 *
 * Verze 1.0 09/2025
 * marek@vach.cz
@@ -22,6 +23,9 @@
 #include <Ethernet.h>
 #include <MQTT.h>
 #include <EEPROM.h>
+
+#define _TASK_STATUS_REQUEST
+#include <TaskScheduler.h>
 
 
 // HW pinout section
@@ -81,22 +85,28 @@ const char* gate_positions_texts[] = {
 // Defining classes
 EthernetClient ethClient;
 MQTTClient mqttClient;
+Scheduler runner;
+
+// timer functions declaration
+void relayOpenOn();
+void relayOpenOff();
 
 // Global constants
 const unsigned long period_mqtt_msg = 30000; // 30s
 const unsigned long period_relay_pulse = 1000; // 1s
 const unsigned long period_max_waiting_autoclose = 600000; // 10min 600000
 const unsigned long period_delay_autoclose = 5000; // 5s
-const unsigned long period_fast_scan_inputs = 150; // ms
+const unsigned long period_scan_inputs = 150; // ms
 const unsigned long period_message_clear_way = 2000; // 2s
 const unsigned long period_mqtt_reconnected = 3000; // 3s
 
 // Timers
-unsigned long timing_for_periodic_mqtt_msg = 0;
-unsigned long timing_for_relay_pulse = 0;
+unsigned long timing_mqtt_msg = 0;
+unsigned long timing_relay_pulse = 0;
+Task timer_relay_make_pulse(1000, 1, &relayOpenOff, &runner, false, &relayOpenOn, NULL);    // 1s, repeat 1x, func, scheduler, task_enabled, onEnable, onDisable
 unsigned long timing_for_cancel_autoclose = 0;
 unsigned long timing_delay_autoclose = 0;
-unsigned long timing_fast_scan_inputs = 0;
+unsigned long timing_scan_inputs = 0;
 unsigned long timing_message_clear_way = 0;
 unsigned long timing_mqtt_reconnected = 0;
 unsigned long timing_led_blinking = 0;
@@ -109,9 +119,8 @@ bool autoclose_planned_close_signal = 0;
 bool autoclose_delay_active = 0;
 bool setting_loop_autoopen;
 bool led_red_blinking_activated = 0;
-int led_red_state_if_blinking = LOW;
 bool led_green_blinking_activated = 0;
-int led_green_state_if_blinking = LOW;
+int state_if_blinking = LOW;
 int led_brightness = 0;
 
 
@@ -180,15 +189,15 @@ byte returnGatePosition() {    // returns index to parse word in variable gatePo
   if ( digitalRead(pin_motor_running) == 1 )
       return 0;
   else if ( digitalRead(pin_limiter_closed) == 0 && digitalRead(pin_limiter_opened) == 1 )
-      return 1;
+      return 1; // zavřeno
   else if ( digitalRead(pin_limiter_closed) == 1 && digitalRead(pin_limiter_opened) == 0 && autoclose_activated == 0 )
-      return 2;
+    return 2;   // otevřeno
   else if ( digitalRead(pin_limiter_closed) == 1 && digitalRead(pin_limiter_opened) == 0 && autoclose_activated == 1 )
-      return 3;
+    return 3;   // otevřeno pro průjezd
   else if ( digitalRead(pin_limiter_closed) == 1 && digitalRead(pin_limiter_opened) == 1 && digitalRead(pin_motor_running) == 0 )
-      return 4;
+    return 4;   // mezipoloha
   else
-      return 5;
+    return 5;   // neznámý stav nebo chyba čidel
 }
 
 
@@ -222,12 +231,8 @@ void setLedForPositions() {
         digitalWrite(pin_led_red, HIGH);
         // digitalWrite(pin_led_blue, LOW);
 
-        timing_led_blinking = millis();
         led_green_blinking_activated = 1;
         led_red_blinking_activated = 1;
-        
-        led_green_state_if_blinking = HIGH;
-        led_red_state_if_blinking = HIGH;
         break;
       case 4:
         // red mezipoloha
@@ -241,7 +246,7 @@ void setLedForPositions() {
         digitalWrite(pin_led_red, HIGH);
         // digitalWrite(pin_led_blue, LOW);
 
-        timing_led_blinking = millis();
+        led_green_blinking_activated = 0;
         led_red_blinking_activated = 1;
         break;
     }
@@ -249,28 +254,38 @@ void setLedForPositions() {
 
 
 
+void relayOpenOn() {
+  digitalWrite(pin_relay_open, HIGH);
+}
+
+
+
+void relayOpenOff() {
+  digitalWrite(pin_relay_open, LOW);
+}
+
+
 void makeOpenGatePulse() {
   digitalWrite(pin_relay_open, HIGH);
-  relay_open_active = 1;
-  timing_for_relay_pulse = millis();
+  timing_relay_pulse = millis();
 }
 
 
 
 void makeOpenGateAutomatic() {
-  if ( autoclose_activated == 1 ) {
+  if (index_gate_position == 0 || index_gate_position > 3) {
+    Serial.println(F("Not accepted!"));
+    return;
+  }
+
+  if ( index_gate_position == 3 ) {
     Serial.println(text_autoclose_canceled);
     autoclose_activated = 0;
     autoclose_planned_close_signal = 0;
     return;
   }
 
-  if (index_gate_position > 3) {
-    Serial.println(F("Not accepted!"));
-    return;
-  }
-
-  if (digitalRead(pin_limiter_closed) == 0 || autoclose_planned_close_signal == 1)
+  if ( index_gate_position == 1 )
     makeOpenGatePulse();
 
   autoclose_activated = 1;
@@ -280,10 +295,11 @@ void makeOpenGateAutomatic() {
 
 
 
-void fastScanInputs() {
+void scanInputs() {
   if (returnGatePosition() != index_gate_position ) {
     index_gate_position = returnGatePosition();
     setLedForPositions();
+    Serial.println(gate_positions_texts[index_gate_position]);
     mqttClient.publish(topic_gate_position, gate_positions_texts[index_gate_position]);
   } 
 
@@ -293,9 +309,8 @@ void fastScanInputs() {
     Serial.print(text_changed_state_to);
     Serial.println(last_induction_loop);
 
-    if (setting_loop_autoopen == 1 && index_gate_position == 1 && last_induction_loop == 1 && autoclose_activated == 0 && relay_open_active == 0)
+    if (index_gate_position == 1 && last_induction_loop == 1 && setting_loop_autoopen == 1)
       makeOpenGateAutomatic();
-    
   }
 
   if (digitalRead(pin_input_open_automatic) != last_input_open_automatic) {
@@ -350,7 +365,7 @@ void setupIoPins() {
   pinMode(pin_input_open_automatic, INPUT_PULLUP);
 
   pinMode(pin_sensor_mailbox, INPUT_PULLUP);
-  pinMode(pin_home_ring, INPUT_PULLUP);
+  pinMode(pin_home_ring,      INPUT_PULLUP);
 }
 
 
@@ -359,10 +374,11 @@ void setup() {
   setupIoPins();
   last_sensor_mailbox = digitalRead(pin_sensor_mailbox);
   last_home_ring = digitalRead(pin_home_ring);
-  index_gate_position = returnGatePosition();
-  setLedForPositions();
   last_input_open_automatic = digitalRead(pin_input_open_automatic);
   last_induction_loop = digitalRead(pin_induction_loop);
+  index_gate_position = returnGatePosition();
+  setLedForPositions();
+
   delay(3000);
   
   Serial.begin(9600);
@@ -384,9 +400,30 @@ void loop() {
     connectMqtt();
   }
 
+  runner.execute();
+
+  // autoclose logic
+  if ( autoclose_activated == 1 && digitalRead(pin_induction_loop) == 1 && autoclose_planned_close_signal == 0 ) {
+    autoclose_planned_close_signal = 1;
+    Serial.println(F("Vehicle on loop."));
+  }
+
+  if ( autoclose_activated == 1 && digitalRead(pin_induction_loop) == 0 && autoclose_planned_close_signal == 1 && autoclose_delay_active == 0 && index_gate_position == 3 ) {
+    autoclose_delay_active = 1;
+    timing_delay_autoclose = millis();
+    Serial.println(F("Delay started."));
+  }
+
+
+
   // timers
-  if ( millis() - timing_for_periodic_mqtt_msg > period_mqtt_msg ) {
-    timing_for_periodic_mqtt_msg = millis();
+  if ( millis() - timing_scan_inputs > period_scan_inputs ) {
+    timing_scan_inputs = millis();
+    scanInputs();
+  }
+
+  if ( millis() - timing_mqtt_msg > period_mqtt_msg ) {
+    timing_mqtt_msg = millis();
     mqttClient.publish(topic_connect_status, "online");
     index_gate_position = returnGatePosition();
     mqttClient.publish(topic_gate_position, gate_positions_texts[index_gate_position]);
@@ -394,35 +431,27 @@ void loop() {
     mqttClient.publish(topic_brightness_info, led_brightness ? "1" : "0");
   }
 
-  if ( millis() - timing_fast_scan_inputs > period_fast_scan_inputs )
-    fastScanInputs();
-
-  if ( (millis() - timing_for_relay_pulse > period_relay_pulse) && relay_open_active == 1 ) {
-    relay_open_active = 0;
+  if ( millis() - timing_relay_pulse > period_relay_pulse ) {
     digitalWrite(pin_relay_open, LOW);
   }
 
   if ( millis() - timing_led_blinking > period_relay_pulse ) {
-    if (led_green_blinking_activated == 1) {
-      timing_led_blinking = millis();
-      led_green_state_if_blinking = !led_green_state_if_blinking;
-      digitalWrite(pin_led_green, led_green_state_if_blinking);
-    }
-    if (led_red_blinking_activated == 1) {
-      timing_led_blinking = millis();
-      led_red_state_if_blinking = !led_red_state_if_blinking;
-      digitalWrite(pin_led_red, led_red_state_if_blinking);
-    }
+    timing_led_blinking = millis();
+    state_if_blinking = !state_if_blinking;
+
+    if (led_green_blinking_activated == 1)  
+      digitalWrite(pin_led_green, state_if_blinking);
+    
+    if (led_red_blinking_activated == 1) 
+      digitalWrite(pin_led_red, state_if_blinking);
   }
 
-  if ( (millis() - timing_for_cancel_autoclose > period_max_waiting_autoclose) && autoclose_activated == 1 ) {
+  if ( (millis() - timing_for_cancel_autoclose > period_max_waiting_autoclose) && index_gate_position == 3 ) {
     autoclose_activated = 0;  
     autoclose_planned_close_signal = 0;
     autoclose_delay_active = 0;
     Serial.println(text_autoclose_canceled);
-    index_gate_position = returnGatePosition();
-    setLedForPositions();
-    mqttClient.publish(topic_gate_position, gate_positions_texts[index_gate_position]);
+    scanInputs();
   }
 
   if ( (millis() - timing_delay_autoclose > period_delay_autoclose) && autoclose_activated == 1 && autoclose_planned_close_signal == 1 && autoclose_delay_active == 1) {
@@ -439,6 +468,8 @@ void loop() {
     }
   }
 
+
+
   // processing of MQTT tasks
   if ( millis() - timing_mqtt_reconnected < period_mqtt_reconnected )
     clearMessages();    // drop false-positive commands after reconnect
@@ -449,15 +480,11 @@ void loop() {
       Serial.print(F(": "));
       Serial.println(received_message);
 
-
-      if (strcmp(received_topic, topic_relay_open_pulse) == 0) {
+      if (strcmp(received_topic, topic_relay_open_pulse) == 0)
         makeOpenGatePulse();
-      }
-
-      if (strcmp(received_topic, topic_relay_open_automatic) == 0) {
+      
+      if (strcmp(received_topic, topic_relay_open_automatic) == 0) 
         makeOpenGateAutomatic();
-      }
-
       
       if (strcmp(received_topic, topic_brightness_set) == 0) {
         if (received_message[0] == '1')
@@ -467,7 +494,7 @@ void loop() {
 
         digitalWrite(pin_led_brightness, led_brightness);
         mqttClient.publish(topic_brightness_info, led_brightness ? "1" : "0");
-      }      
+      }
 
       if (strcmp(received_topic, topic_setting_loop_autoopen_set) == 0) {
         if (received_message[0] == '1')
@@ -488,25 +515,7 @@ void loop() {
   }
 
 
-  // autoclose logic
-  if ( autoclose_activated == 1 && digitalRead(pin_induction_loop) == 1 && autoclose_planned_close_signal == 0 ) {
-    autoclose_planned_close_signal = 1;
-    Serial.println(F("Vehicle on loop."));
-  }
-
-  if ( autoclose_activated == 1 && digitalRead(pin_induction_loop) == 0 && autoclose_planned_close_signal == 1 && autoclose_delay_active == 0 && index_gate_position == 3 ) {
-    autoclose_delay_active = 1;
-    timing_delay_autoclose = millis();
-    Serial.println(F("Delay started."));
-  }
-    
-  
-  
-
-
-
-
-
-
-
 }
+
+
+
