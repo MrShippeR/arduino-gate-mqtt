@@ -311,7 +311,7 @@ void scanInputs() {
     Serial.print(topic_mailbox);
     Serial.print(text_changed_state_to);
     Serial.println(last_sensor_mailbox);
-    mqttClient.publish (topic_mailbox, last_sensor_mailbox);
+    mqttClient.publish (topic_mailbox, last_sensor_mailbox ? "1" : "0");
   }
 
   if (digitalRead(pin_home_ring) != last_home_ring ) {
@@ -319,7 +319,7 @@ void scanInputs() {
     Serial.print(topic_home_ring);
     Serial.print(text_changed_state_to);
     Serial.println(last_home_ring);
-    mqttClient.publish (topic_home_ring, last_home_ring);
+    mqttClient.publish (topic_home_ring, last_home_ring ? "1" : "0");
   }
 }
 
@@ -380,6 +380,7 @@ void loop() {
   mqttClient.loop();
 
   if (!mqttClient.connected()) {
+    index_gate_position = 5;  // error
     connectMqtt();
   }
 
